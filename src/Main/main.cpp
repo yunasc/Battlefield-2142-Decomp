@@ -3083,9 +3083,10 @@ int runGame(Options& options, Session& session)
 	helpPopups.setVoiceHook([&voices](const std::string& key) { voices.playHelp(key); });
 	// A help key shown goes on GeneralSettings' played list (saved with
 	// General.con; the settings object chains back to helpPopups).
-	helpPopups.onPlayed = [&console](const std::string& key) {
+	helpPopups.onPlayed = [&console, &session](const std::string& key) {
 		std::string output;
 		console.execute("GeneralSettings.setPlayedVOHelp \"" + key + "\"", output);
+		session.settings.saveGeneral(); // remembered across launches
 	};
 	// The player's controls (Settings/Controls.con builds the maps once;
 	// the controls page's changes stay for the next maps).
