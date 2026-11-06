@@ -41,6 +41,7 @@ public:
 	// camera's view mode (game::camera::Mode) decides; a third-person
 	// choice starts a seat in Chase.
 	bool firstPerson = true;
+	bool spawnFirstPerson = true; // each new soldier's view (--camera-mode third clears it)
 	// c_PIToggleCameraMode (0x004b9e10): in a vehicle the next view mode the
 	// seat's camera allows (0x00612eb0: its CVM* flags, sv.allowNoseCam,
 	// sv.allowExternalViews); living infantry stays in first person.

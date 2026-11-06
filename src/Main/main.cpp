@@ -5376,7 +5376,7 @@ int runGame(Options& options, Session& session)
 		// The player's camera: first person by default (--camera-mode third
 		// for the chase view), its first-person systems built the same way.
 		PlayerCamera playerCamera(round, animationSystems, loadAnimationSystem);
-		playerCamera.firstPerson = options.cameraMode != "third";
+		playerCamera.firstPerson = playerCamera.spawnFirstPerson = options.cameraMode != "third";
 		// FreeCam.* (the HUD manager's slots 0x130 / 0x134, 0x00752050 /
 		// 0x00752150): the next player to follow, the free and following
 		// cameras swapped.
@@ -6432,7 +6432,7 @@ int runGame(Options& options, Session& session)
 				playerCamera.allowNoseCam = sv.allowNoseCam;
 				playerCamera.allowFreeCam = sv.allowFreeCam;
 				if (!sv.allowExternalViews) {
-					playerCamera.firstPerson = true;
+					playerCamera.firstPerson = playerCamera.spawnFirstPerson = true;
 				}
 			}
 			// A new control-object record: the prediction takes the server's
