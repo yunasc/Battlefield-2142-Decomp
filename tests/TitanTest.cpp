@@ -1105,13 +1105,13 @@ TEST(Titan_HeldGunshipDoesNotCrushSoldiers)
 
 // A pilot in the held gunship of a moving Titan's AGSpawner starts the
 // engine: the hold lets go at 0.1 rpm.
-TEST(Titan_HeldGunshipReleasesIntact)
+static void heldGunshipReleasesIntact(const char* mod)
 {
 	const char* gameDir = std::getenv("BF2142_GAME_DIR");
 	if (!gameDir) {
 		return;
 	}
-	TitanLevel level(gameDir, "Suez_Canal", 48);
+	TitanLevel level(gameDir, "Suez_Canal", 48, true, mod);
 	if (!level.loaded) {
 		return;
 	}
@@ -1155,14 +1155,33 @@ TEST(Titan_HeldGunshipReleasesIntact)
 		return false;
 	};
 	CHECK(holding());
+	const float y0 = level.objects.find(ag)->position().y;
 	// The engine starts with the pilot aboard: the rotor reaches 0.1 rpm in
-	// under a second and the hold lets go (the gunship's velocity then is the
-	// Titan's, see GameWorld::holdSpawned).
-	level.run(2);
-	std::fprintf(stderr, "  rpm after 2 s: %.3f, holding %d\n", level.world->vehicle(ag)->rpm(), holding());
+	// under a second and the hold lets go, the gunship at rest on the Titan
+	// (its wheels' springs not kicking it off the deck).
+	level.run(1);
 	CHECK(!holding());
-	// KNOWN FAILING: the gunship is destroyed at the let-go (pressed into the
-	// Titan's mesh, its wheel springs and take-off engine throw it).
 	CHECK(level.world->hitPoints(ag) > 900);
-	CHECK(level.world->vehicle(ag)->rpm() >= 0.1f);
+	// Full throttle: it lifts off the moving Titan.
+	game::SoldierInput fly;
+	fly.throttle = 1;
+	level.world->setInput(pilot, fly);
+	level.run(5);
+	level.world->playerInfo(pilot, info);
+	const float y1 = level.objects.find(ag)->position().y;
+	std::fprintf(stderr, "  y %.2f (held at %.2f), pilot alive %d in vehicle %d, hp %.0f, rpm %.2f\n", y1, y0, info.alive,
+		info.vehicle == ag, level.world->hitPoints(ag), level.world->vehicle(ag)->rpm());
+	CHECK(info.alive && info.vehicle == ag);
+	CHECK(level.world->hitPoints(ag) > 900);
+	CHECK(y1 > y0 + 3);
+}
+
+TEST(Titan_HeldGunshipReleasesIntact)
+{
+	heldGunshipReleasesIntact(nullptr);
+}
+
+TEST(Titan_HeldGunshipReleasesIntactRemaster)
+{
+	heldGunshipReleasesIntact("mods/Project_Remaster_v17_Final");
 }

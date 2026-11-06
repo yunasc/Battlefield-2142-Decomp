@@ -45,9 +45,12 @@ struct TitanLevel {
 	std::function<void()> afterTick;
 	bool loaded = false;
 
-	TitanLevel(const char* gameDir, const std::string& name, int size, bool start = true)
+	TitanLevel(const char* gameDir, const std::string& name, int size, bool start = true, const char* mod = nullptr)
 	{
 		files.setRootPath(gameDir);
+		if (mod) {
+			files.addSearchPath(mod); // as main: the mod first, the base game behind it
+		}
 		files.addSearchPath("mods/bf2142");
 		files.setMountingAllowed(true);
 		const std::string level = "Levels/" + name + "/";

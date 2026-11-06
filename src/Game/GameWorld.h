@@ -2680,6 +2680,11 @@ private:
 			return body ? body->body.pointVelocity(point) : physics::Vec3 {};
 		}
 	};
+	// A team's PlayerControlObject passes the other's force fields and doors.
+	static bool teamPasses(const MeshActor& pco, const MeshActor& other)
+	{
+		return (pco.team == 1 && (other.collisionGroups & 0x100)) || (pco.team == 2 && (other.collisionGroups & 0x200));
+	}
 	MeshActor actorOf(Body& body) const;
 	MeshActor actorOf(const StaticPart& part) const;
 	// B as A asks for it (otherCollisionLod): its faces, box and radius at

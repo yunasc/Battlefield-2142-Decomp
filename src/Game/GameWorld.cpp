@@ -885,6 +885,7 @@ void GameWorld::damage(uint32_t object, float amount, uint32_t projectileMateria
 
 void GameWorld::loseHitPoints(uint32_t object, float amount, int attacker)
 {
+
 	if (titanDamage(object, amount, attacker)) {
 		return; // a Titan's armour (0x004c0e40's Titan rules)
 	}
@@ -1064,6 +1065,11 @@ void GameWorld::holdSpawned(ObjectSpawner& spawner)
 		spawner.stopHolding();
 		if (body) {
 			body->held = false;
+			// Held, nothing probed what is under its wheels: they find the deck at once, and
+			// their damping would take that for a 13 m/s compression and throw it up.
+			if (body->vehicle) {
+				body->vehicle->restartWheels();
+			}
 			sleep(*body);
 			// At rest on the spawner's parent: a Titan's motion goes with it.
 			for (const Titan& titan : m_titans) {

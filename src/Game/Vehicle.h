@@ -489,6 +489,13 @@ public:
 	void legsRespond(physics::RigidBody& body, const physics::Ground& ground, float seconds,
 		float gravity = physics::tuning::kGravity);
 	const std::vector<Wheel>& wheels() const { return m_wheels; }
+	// Each Spring's first step that finds it moving takes its rate as 0 again (a node let go of a hold).
+	void restartWheels()
+	{
+		for (Wheel& w : m_wheels) {
+			w.firstStep = true;
+		}
+	}
 	float mass() const { return m_mass; }
 	int gear() const { return m_gear; }
 	// normalised: 0 at minRpm, 1 at maxRpm; the first old engine's for the others
