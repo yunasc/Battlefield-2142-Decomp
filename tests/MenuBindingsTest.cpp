@@ -1408,3 +1408,31 @@ TEST(MenuBindings_ServerRulesTimesKitsAndProbes)
 	CHECK(!avm1::toBoolean(call(vm, natives, "dice.bf2.VideoSettings", "isRunningWithUnsupportedDrivers")));
 	CHECK(!avm1::toBoolean(call(vm, natives, "dice.bf2.AudioSettings", "isInCriticalState")));
 }
+
+// The menu's setPlayedVOHelp: a key listed once (any case), saved to
+// General.con, and then reported played by checkPlayedVOHelp.
+TEST(MenuBindings_SetPlayedVOHelpPersists)
+{
+	const std::filesystem::path dir = std::filesystem::temp_directory_path() / "bf2142_menu_playedhelp_test";
+	std::filesystem::remove_all(dir);
+	std::filesystem::create_directories(dir / "Default");
+	Fake fake;
+	NativeRegistry natives;
+	menu::MenuBindings bindings(natives, fake.services());
+	menu::SettingsObjects objects;
+	objects.setDirectory(dir.string(), "Default");
+	bindings.setSettingsObjects(&objects);
+	avm1::Interpreter vm;
+	const auto gs = [&](const char* member, const char* key) {
+		return call(vm, natives, "dice.bf2.GeneralSettings", member, {avm1::Value(key)});
+	};
+	CHECK(!avm1::toBoolean(gs("checkPlayedVOHelp", "HUD_HELP_Menu")));
+	gs("setPlayedVOHelp", "HUD_HELP_Menu");
+	gs("setPlayedVOHelp", "hud_help_menu");
+	CHECK(avm1::toBoolean(gs("checkPlayedVOHelp", "HUD_HELP_MENU")));
+	CHECK(objects.list("GeneralSettings.PlayedVOHelp").size() == 1);
+	std::ifstream in(dir / "Default" / "General.con");
+	const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+	CHECK(text.find("GeneralSettings.setPlayedVOHelp \"HUD_HELP_Menu\"") != std::string::npos);
+	std::filesystem::remove_all(dir);
+}
