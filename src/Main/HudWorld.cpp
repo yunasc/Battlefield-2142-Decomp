@@ -283,6 +283,8 @@ std::vector<HudWorld::ControlPointInfo> RemoteHudWorld::controlPointList() const
 		ControlPointInfo cp {1000 + o.ghost, o.team, {o.position.x, o.position.y, o.position.z},
 			templateNumber(t, "radius", 10), templateNumber(t, "unableToChangeTeam", 0) == 0};
 		cp.name = t ? t->name() : std::string();
+		cp.flagHeight = o.captureProgress;
+		cp.flagRate = o.captureRate;
 		if (t) {
 			for (const char* key : {"controlPointName", "name"}) {
 				const auto it = t->settings().find(key);

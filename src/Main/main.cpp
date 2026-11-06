@@ -1779,6 +1779,28 @@ void updateHud(hud::HudManager& hud, const host::HudWorld& world, game::GameWorl
 			hud.setString("SpawnInfoString", seconds >= 0 ? withTime("HUD_CENTERINFOBOX_timeuntildamage") : std::string());
 		}
 	}
+	// The capture bar (HudElementsConquest.con "Controlpoint Info": shown
+	// while the soldier is in a capturable point's radius, the point
+	// getOccupyingCP picks; the flag's height 0..1 on the "taken" bar as it
+	// rises on a neutral point, on the "neutral" bar as an owned flag is
+	// lowered; the Titan bars read the same variables, "Retargeting" /
+	// "Deactivating"). shortcut: which bar a stalled flag uses is a guess.
+	{
+		dice::hfe::menu::CaptureBar bar;
+		if (alive || inVehicle) {
+			physics::Vec3 at {};
+			game::GameWorld::PlayerInfo self;
+			if (world.playerInfo(world.localPlayer(), self)) {
+				at = self.position;
+				bar = dice::hfe::menu::captureBar(world.controlPointList(), at);
+			}
+		}
+		hud.set("CPInterfaceEnabled", bar.enabled ? 1 : 0);
+		hud.set("PreCPIsNeutralShow", bar.neutralShow ? 1 : 0);
+		hud.set("PreCPIsTakenShow", bar.takenShow ? 1 : 0);
+		hud.set("TimePreCPIsNeutral", bar.value);
+		hud.set("TimePreCPIsTaken", bar.value);
+	}
 	const int team = world.playerTeam() == 1 ? 1 : 2, enemy = 3 - team;
 	hud.setString("FriendlyTicketsString", std::to_string(static_cast<int>(world.tickets(team))));
 	hud.setString("EnemyTicketsString", std::to_string(static_cast<int>(world.tickets(enemy))));

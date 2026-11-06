@@ -771,3 +771,37 @@ TEST(Hud_NonEnglishTextHasGlyphs)
 	}
 	hud::setLanguage("English");
 }
+
+// The capture bar and the capture voice (HudMenus.h captureBar, GameWorld.h captureVoice).
+#include "Main/HudMenus.h"
+
+TEST(CaptureBar_ShowsTheFlagMovingInTheClosestPointsRadius)
+{
+	using Info = dice::hfe::game::GameWorld::ControlPointInfo;
+	Info neutral {1, 0, {0, 0, 0}, 10};
+	neutral.flagHeight = 0.4f;
+	neutral.flagRate = 0.05f;
+	Info owned {2, 1, {100, 0, 0}, 10};
+	owned.flagHeight = 0.7f;
+	owned.flagRate = -0.05f;
+	auto bar = dice::hfe::menu::captureBar({neutral, owned}, {3, 0, 0});
+	CHECK(bar.enabled && bar.takenShow && !bar.neutralShow);
+	CHECK(std::fabs(bar.value - 0.4f) < 1e-5f);
+	bar = dice::hfe::menu::captureBar({neutral, owned}, {101, 0, 0});
+	CHECK(bar.enabled && bar.neutralShow && !bar.takenShow);
+	CHECK(std::fabs(bar.value - 0.7f) < 1e-5f);
+	CHECK(!dice::hfe::menu::captureBar({neutral, owned}, {50, 0, 0}).enabled);
+	owned.capturable = false;
+	CHECK(!dice::hfe::menu::captureBar({owned}, {100, 0, 0}).enabled);
+}
+
+TEST(CaptureVoice_IsTeamRelativeAndSiloAware)
+{
+	using dice::hfe::game::captureVoice;
+	CHECK(captureVoice(0, 1, 1, 0) == "AUTO_RULES_wecapturedacp");
+	CHECK(captureVoice(1, 2, 1, 0) == "AUTO_RULES_welostacp");
+	CHECK(captureVoice(1, 0, 2, 0).empty());
+	CHECK(captureVoice(0, 2, 1, 3) == "AUTO_TITAN_C_enemycapturedsilo_3");
+	CHECK(captureVoice(0, 1, 1, 3) == "AUTO_TITAN_C_friendlycapturedsilo_3");
+	CHECK(captureVoice(1, 2, 1, 5) == "AUTO_TITAN_C_friendlylostsilo_5");
+}

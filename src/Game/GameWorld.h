@@ -83,6 +83,10 @@ physics::Vec3 ragDollHitForce(physics::Vec3 direction, float hitUp, float hitFor
 // the round starts as the round's starting teams.
 enum class RoundState { BeforeStart = 3, Playing = 1 };
 
+// The voice line the local player hears when a control point changes hands
+// ("" for none); siloIndex 1..5 selects Titan mode's silo variants.
+std::string captureVoice(int oldTeam, int newTeam, int localTeam, int siloIndex);
+
 // An ObjectSpawner template's settings (ObjectSpawner template 0x2c0-0x304,
 // defaults from its constructor 0x005af920).
 struct SpawnerSettings {
@@ -772,6 +776,10 @@ public:
 		// The control point's object template name, used as a readable label
 		// beside its deployment-map spawn marker.
 		std::string name;
+		// The flag script's state, for the capture bar: height 0 (bottom)..1
+		// (top) and its change per second (takeOverChangePerSecond).
+		float flagHeight = 0;
+		float flagRate = 0;
 	};
 	std::vector<ControlPointInfo> controlPointList() const;
 	// The control points of a supply group (host.sgl_getControlPointsInGroup,

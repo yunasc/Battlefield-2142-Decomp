@@ -595,10 +595,38 @@ void GameWorld::stepControlPoints(float seconds)
 	}
 }
 
+std::string captureVoice(int oldTeam, int newTeam, int localTeam, int siloIndex)
+{
+	if (oldTeam == newTeam || localTeam == 0) {
+		return {};
+	}
+	const bool silo = siloIndex >= 1 && siloIndex <= 5;
+	const std::string n = silo ? "_" + std::to_string(siloIndex) : std::string();
+	if (newTeam == localTeam) {
+		return silo ? "AUTO_TITAN_C_friendlycapturedsilo" + n : "AUTO_RULES_wecapturedacp";
+	}
+	if (oldTeam == localTeam) {
+		return silo ? "AUTO_TITAN_C_friendlylostsilo" + n : "AUTO_RULES_welostacp";
+	}
+	// shortcut: neutralizing an enemy point is silent; only an enemy capture of a silo has a line
+	return silo && newTeam != 0 ? "AUTO_TITAN_C_enemycapturedsilo" + n : std::string();
+}
+
 void GameWorld::setControlPointTeam(int controlPointId, int team)
 {
 	for (ControlPoint& point : m_controlPoints) {
 		if (point.id == controlPointId) {
+			// The commander's capture lines (VoiceMessages_AutomaticallyTriggered.con
+			// AUTO_RULES_wecapturedacp / welostacp; Titan mode's *silo_1..5 by silo index).
+			if (m_player && m_state != RoundState::BeforeStart) {
+				int siloIndex = 0;
+				for (const SiloInfo& silo : missileSilos()) {
+					if (silo.controlPoint == controlPointId) {
+						siloIndex = silo.controlPoint;
+					}
+				}
+				hearRadio(m_player->id, 2, captureVoice(point.team, team, m_player->team, siloIndex));
+			}
 			point.team = team;
 			point.object->setTeam(team);
 		}
@@ -5814,7 +5842,7 @@ std::vector<GameWorld::ControlPointInfo> GameWorld::controlPointList() const
 		}
 		list.push_back({point.id, point.team, {p.x, p.y, p.z}, t ? number(*t, "radius", 10) : 10,
 			!(t && number(*t, "unableToChangeTeam", 0) != 0), !(t && number(*t, "isVisible", 1) == 0),
-			!(t && number(*t, "showOnMinimap", 1) == 0), std::move(name)});
+			!(t && number(*t, "showOnMinimap", 1) == 0), std::move(name), point.flagHeight, point.takeOverChangePerSecond});
 	}
 	return list;
 }
