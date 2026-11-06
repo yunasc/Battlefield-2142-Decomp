@@ -1064,9 +1064,15 @@ void GameWorld::holdSpawned(ObjectSpawner& spawner)
 		spawner.stopHolding();
 		if (body) {
 			body->held = false;
-			body->body.velocity = {};
-			body->body.angularVelocity = {};
 			sleep(*body);
+			// At rest on the spawner's parent: a Titan's motion goes with it.
+			for (const Titan& titan : m_titans) {
+				for (const Titan::Spawn& carried : titan.carried) {
+					if (carried.object == spawner.object().id()) {
+						body->body.velocity = titan.velocity;
+					}
+				}
+			}
 		}
 		return;
 	}
@@ -1087,6 +1093,8 @@ void GameWorld::holdSpawned(ObjectSpawner& spawner)
 		// Its node's motion stopped (slot 0x148): no step and no mover until
 		// it is let go; its engines still run (stepPhysics).
 		body->held = true;
+		body->response = physics::ContactResponse {}; // no contact outlives the hold
+		body->lastPosition = body->body.position; // the step it is let go in sweeps from here
 	}
 }
 

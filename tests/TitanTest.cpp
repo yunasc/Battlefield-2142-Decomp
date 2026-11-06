@@ -1102,3 +1102,67 @@ TEST(Titan_HeldGunshipDoesNotCrushSoldiers)
 	std::fprintf(stderr, "  %d of %d died\n", deaths, tries);
 	CHECK(deaths == 0);
 }
+
+// A pilot in the held gunship of a moving Titan's AGSpawner starts the
+// engine: the hold lets go at 0.1 rpm.
+TEST(Titan_HeldGunshipReleasesIntact)
+{
+	const char* gameDir = std::getenv("BF2142_GAME_DIR");
+	if (!gameDir) {
+		return;
+	}
+	TitanLevel level(gameDir, "Suez_Canal", 48);
+	if (!level.loaded) {
+		return;
+	}
+	const int team = 2;
+	const auto titan = *level.titan(team);
+	CHECK(level.world->moveTitan(team, 300, -200) == game::GameWorld::TitanMove::Accepted);
+	level.run(5);
+	uint32_t ag = 0;
+	for (const auto& object : level.objects.objects()) {
+		const std::string& name = object->objectTemplate() ? object->objectTemplate()->name() : std::string();
+		if (name.size() == 5 && name.substr(2) == "_ag") {
+			ag = object->id();
+		}
+	}
+	CHECK(ag != 0);
+	if (!ag) {
+		return;
+	}
+	const int pilot = level.world->addPlayer("Pilot", titan.team, false);
+	level.world->setSpawnTitan(pilot, titan.object);
+	CHECK(level.world->spawnSoldier(pilot));
+	game::GameWorld::PlayerInfo info;
+	level.world->playerInfo(pilot, info);
+	const world::Vec3 at = level.objects.find(ag)->position();
+	level.world->setSoldierPosition(info.soldier, {at.x, at.y, at.z - 4});
+	level.run(0.5f);
+	game::SoldierInput use;
+	use.use = true;
+	level.world->setInput(pilot, use);
+	level.run(0.1f);
+	level.world->setInput(pilot, {});
+	level.run(0.5f);
+	level.world->playerInfo(pilot, info);
+	CHECK(info.vehicle == ag);
+	const auto holding = [&] {
+		for (const auto& s : level.world->spawners()) {
+			if (s->lastSpawned() == ag) {
+				return s->holding();
+			}
+		}
+		return false;
+	};
+	CHECK(holding());
+	// The engine starts with the pilot aboard: the rotor reaches 0.1 rpm in
+	// under a second and the hold lets go (the gunship's velocity then is the
+	// Titan's, see GameWorld::holdSpawned).
+	level.run(2);
+	std::fprintf(stderr, "  rpm after 2 s: %.3f, holding %d\n", level.world->vehicle(ag)->rpm(), holding());
+	CHECK(!holding());
+	// KNOWN FAILING: the gunship is destroyed at the let-go (pressed into the
+	// Titan's mesh, its wheel springs and take-off engine throw it).
+	CHECK(level.world->hitPoints(ag) > 900);
+	CHECK(level.world->vehicle(ag)->rpm() >= 0.1f);
+}
