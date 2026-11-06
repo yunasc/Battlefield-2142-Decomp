@@ -9177,7 +9177,7 @@ void GameWorld::stepSoldier(Player& player, float seconds)
 		mover.centerOfMass = b.body.worldCenterOfMass();
 		mover.owner = b.object;
 		mover.mass = b.mass;
-		mover.asleep = b.sleep.asleep();
+		mover.asleep = asleep(b); // a spawner-held node is stopped (holdObject): no crush or run-over
 		mover.collisionGroups = b.collisionGroups;
 		mover.ignoring = b.ignoreSet && m_ticks <= b.ignoreUntil;
 		mover.ignoresThis = mover.ignoring && b.ignored == player.object;

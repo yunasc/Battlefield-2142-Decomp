@@ -1042,3 +1042,63 @@ TEST(Titan_FallingBotOpensItsParachute)
 	CHECK(rode && info.alive && !info.vehicle);
 	CHECK(info.position.y < pac.position.y - 100); // on the ground
 }
+
+// The gunship a Titan's AGSpawner holds (holdObject) is a stopped node, not a
+// heavy moving object: a soldier running into it is neither squashed nor run
+// over (1000 damage, no attacker: "is no more").
+TEST(Titan_HeldGunshipDoesNotCrushSoldiers)
+{
+	const char* gameDir = std::getenv("BF2142_GAME_DIR");
+	if (!gameDir) {
+		return;
+	}
+	TitanLevel level(gameDir, "Suez_Canal", 48);
+	if (!level.loaded) {
+		return;
+	}
+	const int team = 2; // the human player's side in the reported session (--play 2)
+	const auto titan = *level.titan(team);
+	CHECK(level.world->moveTitan(team, 300, -200) == game::GameWorld::TitanMove::Accepted);
+	level.run(5);
+	uint32_t ag = 0;
+	for (const auto& object : level.objects.objects()) {
+		const std::string& name = object->objectTemplate() ? object->objectTemplate()->name() : std::string();
+		if (name.size() == 5 && name.substr(2) == "_ag") {
+			ag = object->id();
+		}
+	}
+	CHECK(ag != 0);
+	if (!ag) {
+		return;
+	}
+	int deaths = 0, tries = 0;
+	// Soldiers running at the held gunship from the -z side (yaw 0 faces +z).
+	for (float dx = -6; dx <= 6; dx += 1.0f) {
+		for (const bool sprint : {false, true}) {
+			const int runner = level.world->addPlayer("Runner", titan.team, false);
+			level.world->setSpawnTitan(runner, titan.object);
+			if (!level.world->spawnSoldier(runner)) {
+				continue;
+			}
+			game::GameWorld::PlayerInfo info;
+			level.world->playerInfo(runner, info);
+			const world::Vec3 at = level.objects.find(ag)->position();
+			level.world->setSoldierPosition(info.soldier, {at.x + dx, 159.95f, at.z - 10});
+			level.run(0.5f); // settles on the deck
+			game::SoldierInput run;
+			run.throttle = 1;
+			run.sprint = sprint;
+			level.world->setInput(runner, run);
+			++tries;
+			level.run(4);
+			level.world->setInput(runner, {});
+			level.world->playerInfo(runner, info);
+			if (!info.alive) {
+				++deaths;
+				std::fprintf(stderr, "  died running at x offset %.1f%s\n", dx, sprint ? " sprinting" : "");
+			}
+		}
+	}
+	std::fprintf(stderr, "  %d of %d died\n", deaths, tries);
+	CHECK(deaths == 0);
+}
