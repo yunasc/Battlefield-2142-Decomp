@@ -405,6 +405,16 @@ void HelpPopups::showText(hud::HudManager& hud, const std::string& text, float s
 
 void HelpPopups::update(hud::HudManager& hud, const Context& context, float seconds)
 {
+	// Help cards persist across the transition into deployment. They can cover
+	// the map's upper spawn choices, so clear them for the duration of this
+	// screen and let the map's own labels explain the available points.
+	if (context.spawnScreen) {
+		hud.set("IngameHelpShow", 0);
+		m_timer = 0;
+		m_tutorialShowing = false;
+		m_sinceTutorial = 0;
+		return;
+	}
 	// The HUD manager's count down (0x007539c0).
 	if (m_timer > 0) {
 		m_timer -= seconds;

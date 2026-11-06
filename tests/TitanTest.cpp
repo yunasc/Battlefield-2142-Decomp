@@ -1,6 +1,6 @@
-// Titan mode on the shipped levels (needs $BF2142_GAME_DIR): Minsk's and
-// Minsk_Titan16's gpm_ti gameplay objects with every object template, the
-// terrain, the collision meshes and the materials. The Titans spawn with
+// Titan mode on the shipped levels (needs $BF2142_GAME_DIR): Minsk's,
+// Suez_Canal's and Minsk_Titan16's gpm_ti gameplay objects with every object
+// template, terrain, collision meshes and materials. The Titans spawn with
 // their parts and spawn points, the missile silos fire at the enemy Titan
 // and wear its shield and then its hull down, the core's sequence (four
 // consoles, the doors, the core) destroys a Titan, the commander's order
@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 
 using namespace dice::hfe;
 using titantest::TitanLevel;
@@ -350,6 +351,81 @@ TEST(Titan_MovesToTheCommandersTarget)
 	level.run(30);
 	CHECK(std::sqrt(physics::lengthSquared(level.titan(1)->velocity)) < 0.05f);
 	CHECK(!level.titan(1)->canMove);
+}
+
+// Selecting a Titan must use its own moving spawn points even when its
+// control-point group also contains the level's ordinary ground spawns.
+TEST(Titan_SuezDeploymentSelectsInteriorOnly)
+{
+	const char* gameDir = std::getenv("BF2142_GAME_DIR");
+	if (!gameDir) {
+		return;
+	}
+	TitanLevel level(gameDir, "Suez_Canal", 48);
+	CHECK(level.loaded);
+	if (!level.loaded) {
+		return;
+	}
+	const game::GameWorld::TitanInfo* titan = level.titan(2);
+	CHECK(titan != nullptr);
+	if (!titan) {
+		return;
+	}
+	const uint32_t ownTitan = titan->object;
+	const int ownTeam = titan->team;
+	const int titanControlPoint = titan->controlPoint;
+	const std::vector<uint32_t> interiors = level.world->titanSpawnPoints(ownTeam);
+	CHECK(interiors.size() == 7);
+	int groundPoints = 0;
+	for (const auto& object : level.objects.objects()) {
+		const world::ObjectTemplate* templ = object->objectTemplate();
+		if (!templ || templ->typeName() != "SpawnPoint") {
+			continue;
+		}
+		int controlPoint = object->controlPointId();
+		if (controlPoint < 0) {
+			const auto setting = templ->settings().find("controlPointId");
+			if (setting != templ->settings().end()) {
+				controlPoint = std::atoi(setting->second.c_str());
+			}
+		}
+		if (controlPoint == titanControlPoint
+			&& std::find(interiors.begin(), interiors.end(), object->id()) == interiors.end()) {
+			++groundPoints;
+		}
+	}
+	CHECK(groundPoints > 0); // Suez's Titan CP group is genuinely mixed.
+
+	const int bot = level.world->addPlayer("Titan deploy", ownTeam, true);
+	level.world->setSpawnTitan(bot, ownTitan);
+	CHECK(level.world->spawnChoice(bot) == game::GameWorld::kSpawnOnTitan);
+	CHECK(level.world->spawnTitan(bot) == ownTitan);
+	CHECK(level.world->spawnSoldier(bot));
+	game::GameWorld::PlayerInfo info;
+	CHECK(level.world->playerInfo(bot, info) && info.alive);
+	float nearestInterior = std::numeric_limits<float>::max();
+	for (uint32_t id : interiors) {
+		const world::Object* point = level.objects.find(id);
+		if (point) {
+			nearestInterior = std::min(nearestInterior, std::sqrt(physics::lengthSquared(info.position - physics::Vec3 {point->position().x, point->position().y, point->position().z})));
+		}
+	}
+	CHECK(nearestInterior < 2.0f);
+
+	const int invalid = level.world->addPlayer("Invalid Titan deploy", ownTeam, true);
+	level.world->setSpawnTitan(invalid, 0xffffffffu);
+	CHECK(!level.world->spawnSoldier(invalid)); // no ground-spawn fallback for an invalid Titan choice
+	const game::GameWorld::TitanInfo* enemyTitan = level.titan(1);
+	const int enemy = level.world->addPlayer("Enemy Titan deploy", ownTeam, true);
+	CHECK(enemyTitan != nullptr);
+	if (enemyTitan) {
+		level.world->setSpawnTitan(enemy, enemyTitan->object);
+		CHECK(!level.world->spawnSoldier(enemy)); // enemy Titan choice is refused without a ground fallback
+	}
+	level.world->setGameMode("gpm_cq");
+	const int conquest = level.world->addPlayer("Conquest Titan deploy", ownTeam, true);
+	level.world->setSpawnTitan(conquest, ownTitan);
+	CHECK(!level.world->spawnSoldier(conquest)); // Conquest does not gain Titan deployment
 }
 
 // Minsk_Titan16 (gpm_ti 16): its own archives' Titans and silos

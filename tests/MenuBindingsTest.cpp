@@ -488,7 +488,10 @@ TEST(MenuBindings_InstantAction)
 	fake.reachable = false;
 	Menu menu;
 	menu::MenuBindings bindings(menu.player.natives(), fake.services());
-	bindings.setMaps({{"Belgrade", "gpm_sp", 16}, {"Minsk", "gpm_cq", 32}});
+	std::vector<menu::MenuMap> maps;
+	maps.push_back({"Belgrade", "gpm_sp", 16});
+	for (int i = 1; i <= 24; ++i) maps.push_back({"Map" + std::to_string(i), "gpm_sp", 16});
+	bindings.setMaps(maps);
 	std::optional<menu::GameSetup> started;
 	bindings.onStartGame = [&started](const menu::GameSetup& setup) { started = setup; };
 	CHECK(menu.load(gameDir));
@@ -512,11 +515,34 @@ TEST(MenuBindings_InstantAction)
 	menu.run(3);
 	const std::string rows = "singleplay.mc_singleplayer.mcMapsAvailable.m_mcContainer.contents.holder_list.holder_list.";
 	CHECK(menu.text(rows + "row0.cell0.text") == "Belgrade - 16");
+	// The shipped scroll pane requires Mouse.onMouseWheel(delta, target).
+	bool hovered = false;
+	for (const auto& c : menu.player.clickables()) {
+		if (c.target.find("mcMapsAvailable") != std::string::npos && c.target.find("row0") != std::string::npos) {
+			menu.player.mouseMove(c.x + c.width / 2, c.y + c.height / 2);
+			hovered = true;
+			break;
+		}
+	}
+	CHECK(hovered);
+	menu.player.mouseWheel(-3);
+	menu.run(0.2);
+
+	CHECK(menu.text(rows + "row0.cell0.text") != "Belgrade - 16");
+	menu.player.mouseWheel(30);
+	menu.run(0.2);
+	CHECK(menu.text(rows + "row0.cell0.text") == "Belgrade - 16");
+	CHECK(menu.click(rows + "row0"));
 	CHECK(menu.click("singleplay.mc_singleplayer.btnInstantAction"));
 	menu.run(1);
 	CHECK(menu.click("MessageHandler.btnOk"));
 	menu.run(1);
-	CHECK(started && !started->maps.empty() && started->maps[0].level == "Belgrade");
+	CHECK(started && !started->maps.empty());
+	if (started && !started->maps.empty()) {
+		// Instant Action chooses a random available map.
+		CHECK(std::any_of(maps.begin(), maps.end(), [&](const auto& map) { return map.level == started->maps[0].level; }));
+		CHECK(started->maps[0].gameMode == "gpm_sp" && started->maps[0].size == 16);
+	}
 	if (started) {
 		CHECK(started->bots == 16 && started->botsIncludeHumans && started->ticketRatio == 200 && started->spawnTime == 15);
 	}
@@ -893,20 +919,29 @@ TEST(MenuBindings_Mods)
 	std::vector<menu::MenuBindings::ModEntry> mods {mod};
 	if (const char* dir = std::getenv("BF2142_GAME_DIR")) {
 		mods = menu::MenuBindings::findMods(dir);
-		CHECK(mods.size() == 1 && mods[0].path == "mods/bf2142" && mods[0].version == "1.51");
 	}
+	// Additional installed mods may sort before the base game.
+	size_t baseIndex = 0;
+	while (baseIndex < mods.size() && mods[baseIndex].path != "mods/bf2142") {
+		++baseIndex;
+	}
+	CHECK(baseIndex < mods.size());
+	if (baseIndex == mods.size()) {
+		return;
+	}
+	CHECK(mods[baseIndex].version == "1.51");
 	bindings.setMods(mods, "mods/bf2142");
 	avm1::Interpreter vm;
 	const auto m = [&](const char* member, std::vector<avm1::Value> args = {}) {
 		return call(vm, natives, "dice.bf2.Mod", member, std::move(args));
 	};
-	CHECK(vm.toNumber(m("getNumMods")) == 1);
-	CHECK(natives.listRows("mods").size() == 1 && natives.listRows("mods")[0][0] == "Battlefield 2142");
+	CHECK(vm.toNumber(m("getNumMods")) == static_cast<double>(mods.size()));
+	CHECK(natives.listRows("mods").size() == mods.size() && natives.listRows("mods")[baseIndex][0] == "Battlefield 2142");
 	CHECK(vm.toString(m("getCurrentModName")) == "bf2142");
 	CHECK(vm.toString(m("getModTitle")).empty()); // none selected
 	m("activateMod");
 	CHECK(activated.empty());
-	m("selectMod", {avm1::Value(0)});
+	m("selectMod", {avm1::Value(static_cast<double>(baseIndex))});
 	CHECK(vm.toString(m("getModTitle")) == "Battlefield 2142");
 	CHECK(vm.toString(m("getModPath")) == "mods/bf2142" && vm.toString(m("getModPathShort")) == "bf2142");
 	CHECK(vm.toString(m("getModLogo")) == "mod.png" && vm.toString(m("getModVersion")) == "1.51");

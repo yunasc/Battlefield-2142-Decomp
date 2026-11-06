@@ -2034,6 +2034,9 @@ void GameWorld::fire(const Player& player, float aimPitch)
 			p.tracerOffset = physics::lengthSquared(offset) < 9 ? offset : physics::Vec3 {};
 		}
 	}
+	if (!p.serial) {
+		p.serial = ++m_projectileSerial;
+	}
 	m_projectiles.push_back(p);
 	// The third-person muzzle flash: the weapon's e_muzz child, placed by
 	// the weapon's matrix times its own as FireComp places the muzzle
@@ -4279,19 +4282,36 @@ bool GameWorld::spawnSoldier(int id)
 	return spawnSoldier(*player) != nullptr;
 }
 
-world::Object* GameWorld::spawnPlayer(int team)
+int GameWorld::joinPlayer(int team)
 {
 	if (!m_player) {
 		m_addingLocal = true;
-		m_player = findPlayer(addPlayer("Player", team, false));
+		const int id = addPlayer("Player", team, false);
 		m_addingLocal = false;
-		m_player->unlocked = localPlayerUnlocks;
-		m_player->owned = localPlayerOwned;
+		m_player = findPlayer(id);
+		if (m_player) {
+			m_player->unlocked = localPlayerUnlocks;
+			m_player->owned = localPlayerOwned;
+		}
+	}
+	if (!m_player) {
+		return -1;
+	}
+	if (!m_player->alive) {
+		m_player->team = team;
+	}
+	return m_player->id;
+}
+
+world::Object* GameWorld::spawnPlayer(int team)
+{
+	const int id = joinPlayer(team);
+	if (id < 0) {
+		return nullptr;
 	}
 	if (m_player->alive) {
 		return m_objects.find(m_player->object);
 	}
-	m_player->team = team;
 	if (m_player->manDown) {
 		finishDeath(*m_player);
 	}
@@ -5422,6 +5442,12 @@ int GameWorld::spawnChoice(int id) const
 	return player ? player->spawnChoice : -1;
 }
 
+uint32_t GameWorld::spawnTitan(int id) const
+{
+	const Player* player = findPlayer(id);
+	return player ? player->spawnTitan : 0;
+}
+
 std::vector<int> GameWorld::spawnablePoints(int team) const
 {
 	std::vector<int> ids;
@@ -5773,9 +5799,22 @@ std::vector<GameWorld::ControlPointInfo> GameWorld::controlPointList() const
 	for (const ControlPoint& point : m_controlPoints) {
 		const world::ObjectTemplate* t = point.object->objectTemplate();
 		const world::Vec3& p = point.object->position();
+		std::string name = t ? t->name() : std::string();
+		if (t) {
+			for (const char* key : {"controlPointName", "name"}) {
+				const auto it = t->settings().find(key);
+				if (it != t->settings().end() && !it->second.empty()) {
+					name = it->second;
+					if (name.size() >= 2 && name.front() == '"' && name.back() == '"') {
+						name = name.substr(1, name.size() - 2);
+					}
+					break;
+				}
+			}
+		}
 		list.push_back({point.id, point.team, {p.x, p.y, p.z}, t ? number(*t, "radius", 10) : 10,
 			!(t && number(*t, "unableToChangeTeam", 0) != 0), !(t && number(*t, "isVisible", 1) == 0),
-			!(t && number(*t, "showOnMinimap", 1) == 0)});
+			!(t && number(*t, "showOnMinimap", 1) == 0), std::move(name)});
 	}
 	return list;
 }
@@ -5827,6 +5866,17 @@ world::Object* GameWorld::spawnSoldier(Player& player)
 	}
 	const int team = player.team;
 	player.spawnedProne = false;
+	const Titan* selectedTitan = nullptr;
+	if (player.spawnChoice == kSpawnOnTitan) {
+		const auto it = std::find_if(m_titans.begin(), m_titans.end(), [&player, team](const Titan& titan) {
+			return titan.object == player.spawnTitan && titan.team == team && !titan.wrecked && !titan.parts.empty()
+				&& !titan.spawnPoints.empty();
+		});
+		if (m_gameMode != "gpm_ti" || player.spawnTitan == 0 || it == m_titans.end()) {
+			return nullptr; // never turn a failed Titan choice into an ordinary spawn
+		}
+		selectedTitan = &*it;
+	}
 	std::vector<world::Object*> points, fallback;
 	for (const auto& owned : m_objects.objects()) {
 		world::Object& object = *owned;
@@ -5844,7 +5894,17 @@ world::Object* GameWorld::spawnSoldier(Player& player)
 	}
 	// The spawn menu's choice narrows them to one control point's.
 	std::vector<world::Object*> chosen;
-	if (player.spawnChoice >= 0) {
+	if (selectedTitan) {
+		for (world::Object* point : points) {
+			if (std::any_of(selectedTitan->spawnPoints.begin(), selectedTitan->spawnPoints.end(),
+					[point](const Titan::Spawn& spawn) { return spawn.object == point->id(); })) {
+				chosen.push_back(point);
+			}
+		}
+		if (chosen.empty()) {
+			return nullptr; // the Titan died, lost its points, or its CP is no longer owned
+		}
+	} else if (player.spawnChoice >= 0) {
 		for (world::Object* point : points) {
 			const world::ObjectTemplate* t = point->objectTemplate();
 			const int controlPoint = point->controlPointId() != -1 ? point->controlPointId() : integer(*t, "controlPointId", -1);
@@ -5853,7 +5913,7 @@ world::Object* GameWorld::spawnSoldier(Player& player)
 			}
 		}
 	}
-	std::vector<world::Object*> choices = !chosen.empty() ? chosen : points.empty() ? fallback : points;
+	std::vector<world::Object*> choices = selectedTitan ? chosen : !chosen.empty() ? chosen : points.empty() ? fallback : points;
 	// Points with someone standing on them wait (0x005b24f0's last test);
 	// when all of them have, the rewrite takes one anyway.
 	std::vector<world::Object*> clear;
@@ -5945,6 +6005,7 @@ world::Object* GameWorld::spawnSoldier(Player& player)
 	const int fired = player.roundsFired, hits = player.roundsHit;
 	const int spawnChoice = player.spawnChoice;
 	const uint32_t spawnVehicle = player.spawnVehicle;
+	const uint32_t spawnTitan = player.spawnTitan;
 	const bool spawnedProne = player.spawnedProne;
 	const std::string kitName = player.kitTemplate, soldierName = player.soldierTemplate;
 	const std::vector<std::string> unlocked = player.unlocked;
@@ -5965,6 +6026,7 @@ world::Object* GameWorld::spawnSoldier(Player& player)
 	player.roundsHit = hits;
 	player.spawnChoice = spawnChoice;
 	player.spawnVehicle = spawnVehicle;
+	player.spawnTitan = spawnTitan;
 	player.spawnedProne = spawnedProne;
 	player.kitTemplate = kitName;
 	player.soldierTemplate = soldierName;
@@ -6200,6 +6262,14 @@ void GameWorld::setSpawnVehicle(int id, uint32_t vehicle)
 	if (Player* player = findPlayer(id)) {
 		player->spawnChoice = kSpawnInVehicle;
 		player->spawnVehicle = vehicle;
+	}
+}
+
+void GameWorld::setSpawnTitan(int id, uint32_t titan)
+{
+	if (Player* player = findPlayer(id)) {
+		player->spawnChoice = kSpawnOnTitan;
+		player->spawnTitan = titan;
 	}
 }
 
@@ -7899,9 +7969,11 @@ void GameWorld::stepAnimation(Player& player, float seconds)
 	input.turn = std::clamp(turn / seconds, -1499.0f, 1499.0f) * 0.01f;
 	player.lastYaw = player.body.yawDegrees;
 	input.pose = static_cast<int>(player.input.pose);
-	if (player.weapon && player.weapon->reloading()) {
-		input.messages |= 2; // reload
+	const bool reloadingAnimation = player.weapon && player.weapon->reloading();
+	if (reloadingAnimation && !player.animationReloadWas) {
+		input.pulses |= 2; // start once; a held message restarts abruptPlayback
 	}
+	player.animationReloadWas = reloadingAnimation;
 	if (player.fired) {
 		input.pulses |= 1; // fire
 		player.fired = false;
@@ -8180,9 +8252,6 @@ void GameWorld::animateRemoteSoldier(uint32_t object, const RemoteSoldierState& 
 	if (state.fired) {
 		input.pulses |= 1;
 	}
-	if (state.reloading) {
-		input.messages |= 2;
-	}
 	// The look: the muzzle's point and turn (as startEffectsOn's), lower
 	// crouched and prone.
 	const float eye = state.pose == SoldierPose::Prone ? 0.35f : state.pose == SoldierPose::Crouch ? 1.1f : 1.6f;
@@ -8247,10 +8316,12 @@ void GameWorld::animateRemoteSoldier(uint32_t object, const RemoteSoldierState& 
 				round(WeaponSoundEvent::Reload);
 			}
 		}
-		if (remote.reloadLeft > 0) {
-			input.messages |= 2;
-		}
 	}
+	const bool reloadingAnimation = state.reloading || remote.reloadLeft > 0;
+	if (reloadingAnimation && !remote.animationReloadWas) {
+		input.pulses |= 2;
+	}
+	remote.animationReloadWas = reloadingAnimation;
 	if (remote.body) {
 		remote.body->update(input, seconds);
 		remote.body->takeEvents();
@@ -8345,6 +8416,7 @@ void GameWorld::fireRemoteRound(RemoteSoldier& remote, uint32_t object, const ph
 		p.tracer = true;
 		p.tracerStart = p.origin;
 	}
+	p.serial = ++m_projectileSerial;
 	m_projectiles.push_back(p);
 }
 
@@ -8442,6 +8514,7 @@ bool GameWorld::fireRemoteSeatRound(uint32_t vehicle, int seat, const std::strin
 		p.tracer = true;
 		p.tracerStart = p.origin;
 	}
+	p.serial = ++m_projectileSerial;
 	m_projectiles.push_back(p);
 	return true;
 }
@@ -8499,6 +8572,7 @@ void GameWorld::launchRemoteProjectile(uint32_t ghostObject, const std::string& 
 	// Its end is the server's (the ghost going), not a fuse of its own.
 	p.timeLeft = 1e9f;
 	p.yaw = std::atan2(velocity.x, velocity.z) * 57.29578f;
+	p.serial = ++m_projectileSerial;
 	m_projectiles.push_back(p);
 }
 
@@ -8521,6 +8595,7 @@ bool GameWorld::launchProjectile(const std::string& projectileTemplate, const ph
 		p.team = owner->team;
 		p.shooter = owner->object;
 	}
+	p.serial = ++m_projectileSerial;
 	m_projectiles.push_back(p);
 	return true;
 }
@@ -9308,6 +9383,18 @@ void GameWorld::stepSoldier(Player& player, float seconds)
 		player.weapon->startReload();
 	}
 	player.reloadWas = input.reload;
+	// GeneralSettings.AutoReload belongs to the player's profile. The
+	// firearm's ammo.autoReload is a weapon-template behavior (vehicles and
+	// other autonomous weapons use it), so an empty soldier gun requests the
+	// same reload action here without changing the weapon's setting. Keep the
+	// request conditional on reserve ammo: battery weapons and overheat-only
+	// guns retain their own recharge/cooldown behavior, and a dry gun with no
+	// spare magazines cannot restart an animation every tick.
+	if (m_autoReload && &player == m_player && !player.ai && player.weapon
+		&& player.weapon->roundsInMag() == 0 && player.weapon->magsLeft() != 0
+		&& !player.weapon->reloading()) {
+		player.weapon->startReload();
+	}
 	const bool emptyBefore = player.weapon && player.weapon->roundsInMag() <= 0 && !wasReloading;
 	stepBurstRange(player, inHand);
 	// The wheel's c_PINextItem / c_PIPrevItem (inputs 48 / 49) on the input
@@ -9905,10 +9992,17 @@ const GameWorld::VehicleLayout& GameWorld::vehicleLayout(const world::ObjectTemp
 					// by default) picks the group (0x005cc5e0).
 					const auto input = settings.find("fire.fireInput");
 					const std::string fireInput = input != settings.end() ? input->second : std::string("PIFire");
-					w.group = sameName(fireInput, "PIFire") ? 0
+					// Some tank parts are GenericFireArm geometry holders without
+					// a fire component (AS_TANK_TurretSmallFirearm). They have no
+					// fire input and must not displace the actual cannon in group 0.
+					const bool hasFire = std::any_of(t.components().begin(), t.components().end(), [&](const auto& c) {
+						return c.size() >= 8 && sameName(c.substr(c.size() - 8), "FireComp");
+					}) || settings.count("projectileTemplate") || settings.count("fire.fireInput")
+						|| settings.count("fire.roundsPerMinute") || settings.count("ammo.magSize");
+					const bool geometryOnly = settings.count("geometryPart") && !hasFire;
+					w.group = geometryOnly ? -1 : sameName(fireInput, "PIFire") ? 0
 						: sameName(fireInput, "PIAltFire") ? 1
-						: sameName(fireInput, "PIFlareFire") ? 2
-															 : -1;
+						: sameName(fireInput, "PIFlareFire") ? 2 : -1;
 					w.itemIndex = static_cast<int>(number(t, "itemIndex", -1));
 					w.selectable = number(t, "isSelectable", 1) != 0;
 					w.podLauncher = number(t, "fire.isPodLauncher", 0) != 0;
@@ -13231,6 +13325,7 @@ void GameWorld::fireSentry(Drone& drone, float seconds)
 		p.tracer = true;
 		p.tracerStart = p.origin;
 	}
+	p.serial = ++m_projectileSerial;
 	m_projectiles.push_back(p);
 }
 

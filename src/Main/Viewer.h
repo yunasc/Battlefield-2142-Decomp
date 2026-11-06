@@ -60,12 +60,14 @@ struct ViewerOptions {
 		bool voipPushToTalk = false;    // held: c_GIVoipPushToTalk (V)
 		bool voipLeaderChannel = false; // held: c_GIVoipUseLeaderChannel (B)
 		bool toggleCamera = false;      // held: c_PIToggleCameraMode (C)
+		int camera = 0;         // F9..F12: inside, chase, front chase, fly-by
 		int seat = 0;           // F1..F8 held: that vehicle seat (1-based)
 		int item = 0;            // 1..9 held: the weapon in that kit slot
 		bool sayAll = false, sayTeam = false, saySquad = false; // c_GISayAll (K), c_GISayTeam (L), c_GISaySquad
 		bool radioComm = false, tacticalComm = false; // held: c_GIRadioComm (Q), c_GITacticalComm (T)
 		// held: c_GIMapSize (M), c_GIMapZoom (N), c_GI3dMap (left Alt)
 		bool mapSize = false, mapZoom = false, map3d = false;
+		bool deployment = false; // c_GIEnter: toggle the deployment screen
 		bool yes = false, no = false; // c_GIYes / c_GINo: the HUD's questions (0x00754290 → 0x0079e320)
 	};
 	struct PlayerView {

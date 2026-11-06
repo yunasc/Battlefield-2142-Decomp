@@ -2,6 +2,7 @@
 // sounds in $BF2142_SOUND_TEST_DIR (skipped otherwise) and plays them on
 // OpenAL Soft's silent "null" driver.
 #include "Sound/SoundEngine/ISoundEngine.h"
+#include "Sound/SoundEngine/Music.h"
 #include "Sound/SoundEngine/WavFileFormat.h"
 #include "TestMain.h"
 
@@ -18,6 +19,50 @@ const char* testDir() { return std::getenv("BF2142_SOUND_TEST_DIR"); }
 std::string path(const char* relative) { return std::string(testDir()) + "/" + relative; }
 
 } // namespace
+
+TEST(Music_ClearingTrackCannotRestartPreviousSong)
+{
+	if (!testDir()) {
+		return;
+	}
+#ifdef _WIN32
+	_putenv_s("ALSOFT_DRIVERS", "null");
+#else
+	setenv("ALSOFT_DRIVERS", "null", 1);
+#endif
+	auto* engine = snd::getSoundEngine();
+	CHECK(engine->initialize(0, "Software Audio", 16) == 0);
+	const std::string song = path("Music/2142MenuMusic.ogg");
+	CHECK(snd::music::playTrack(song.c_str()));
+	CHECK(snd::music::start());
+	CHECK(snd::music::playTrack(nullptr));
+	CHECK(!snd::music::start());
+	snd::music::stop(0);
+	engine->shutdown();
+	snd::shutdownSoundEngine();
+}
+
+TEST(Music_ReplacingTrackStopsPreviousPlayer)
+{
+	if (!testDir()) {
+		return;
+	}
+#ifdef _WIN32
+	_putenv_s("ALSOFT_DRIVERS", "null");
+#else
+	setenv("ALSOFT_DRIVERS", "null", 1);
+#endif
+	auto* engine = snd::getSoundEngine();
+	CHECK(engine->initialize(0, "Software Audio", 16) == 0);
+	CHECK(snd::music::playTrack(path("Music/2142MenuMusic.ogg").c_str()));
+	CHECK(snd::music::start());
+	CHECK(snd::music::setTrack(path("Ambient/Cerbere.ogg").c_str()));
+	CHECK(!snd::music::stop(0)); // selecting another track must have joined the old player
+	CHECK(snd::music::start());
+	CHECK(snd::music::playTrack(nullptr));
+	engine->shutdown();
+	snd::shutdownSoundEngine();
+}
 
 TEST(Wav_LoopPointsFromCueAndLabel)
 {
