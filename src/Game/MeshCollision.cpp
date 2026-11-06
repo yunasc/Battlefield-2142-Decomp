@@ -518,9 +518,42 @@ void GameWorld::legsSphere(Body& walker, MeshActor& a, MeshActor& b)
 		n = l > 1.1920929e-07f ? n * (1.0f / l) : Vec3 {0, 1, 0};
 		const Vec3 relative = a.pointVelocity(point) - b.pointVelocity(point);
 		const uint32_t material = length(relative) >= 20.0f ? 4251u : 4250u;
-		addMeshContact(a, b, point, n, c.depth, material, c.material, false);
+		addMeshContact(a, b, point, n, c.depth, material, c.material, false, true, true);
 		walker.vehicle->legsObjectContact(n, faceNormal, offset.y < -(legs.length - legs.radius * 0.5f));
 	}
+}
+
+// The walker's feet probe the objects after the heightmap (0x00650e90): the
+// segment against the static parts in the cells it crosses and the other
+// bodies, at their vehicle LOD.
+bool GameWorld::segmentHitsObjects(const Vec3& from, const Vec3& to, uint32_t self)
+{
+	physics::SphereContact hit;
+	const auto cell = [](float v) { return static_cast<int>(std::floor(v / kStaticCell)); };
+	for (int x = std::min(cell(from.x), cell(to.x)); x <= std::max(cell(from.x), cell(to.x)); ++x) {
+		for (int z = std::min(cell(from.z), cell(to.z)); z <= std::max(cell(from.z), cell(to.z)); ++z) {
+			const auto found = m_staticGrid.find(gridKey(x, z));
+			if (found == m_staticGrid.end()) {
+				continue;
+			}
+			for (const uint32_t i : found->second) {
+				const MeshActor c = actorOf(m_staticParts[i]);
+				if (c.mesh && !m_staticParts[i].ladder && c.mesh->segmentContact(from, to, c.rotation, c.position, hit)) {
+					return true;
+				}
+			}
+		}
+	}
+	for (Body& other : m_bodies) {
+		if (other.object == self || !other.vehicleMesh || other.points.empty() || findDrone(other.object)) {
+			continue;
+		}
+		const MeshActor c = actorOf(other);
+		if (c.mesh && c.mesh->segmentContact(from, to, c.rotation, c.position, hit)) {
+			return true;
+		}
+	}
+	return false;
 }
 
 // Slot 9 of the mobile mesh response (0x006bb050), A into B.
@@ -707,7 +740,7 @@ bool GameWorld::meshPair(MeshActor& a, MeshActor& b, float seconds, bool trunkOn
 // positive along the normal into B); the others' is <= 0 (how far the end
 // lies behind B's face).
 physics::MassShares GameWorld::addMeshContact(MeshActor& a, MeshActor& b, const Vec3& point, const Vec3& normal,
-	float depth, uint32_t materialA, uint32_t materialB, bool trunkPass, bool toA)
+	float depth, uint32_t materialA, uint32_t materialB, bool trunkPass, bool toA, bool legs)
 {
 	const Vec3 relative = a.pointVelocity(point) - b.pointVelocity(point);
 	const float approach = physics::dot(relative, normal);
@@ -753,8 +786,15 @@ physics::MassShares GameWorld::addMeshContact(MeshActor& a, MeshActor& b, const 
 		a.body->support = b.body->object;
 	}
 	if (shares.velocityA != 0 && a.body && toA) {
-		a.body->response.addContact(point - a.position, relative * shares.velocityA, normal, depth * shares.depthA,
-			material);
+		// A walker's own contacts are the legs' record (0x006cdad0 into +0x258,
+		// solved by 0x006ce740 with the ground's, which takes the approach out
+		// without friction), not the generic response's: its slot 0x2c is a
+		// bare return (0x00854170). Friction there brakes a walker on a deck.
+		physics::ContactMaterial own = material;
+		if (legs) {
+			own.friction = 0;
+		}
+		a.body->response.addContact(point - a.position, relative * shares.velocityA, normal, depth * shares.depthA, own);
 	}
 	if (shares.velocityB != 0 && b.body) {
 		b.body->response.addContact(point - b.position, relative * shares.velocityB, normal, depth * shares.depthB,

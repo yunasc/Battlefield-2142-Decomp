@@ -12701,6 +12701,11 @@ bool GameWorld::stepBody(Body& b, float seconds)
 		if (b.animation) {
 			b.vehicle->setLegsAnimation(b.animation->blocksInput(), b.animation->speedFactor());
 		}
+		if (legs) {
+			b.vehicle->setLegsObjectProbe([this, self = b.object](const physics::Vec3& from, const physics::Vec3& to) {
+				return segmentHitsObjects(from, to, self);
+			});
+		}
 		b.vehicle->tick(body, m_ground, seconds, grip);
 	}
 	if (b.canopy) {

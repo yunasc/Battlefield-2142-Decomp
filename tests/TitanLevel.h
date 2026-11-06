@@ -45,7 +45,7 @@ struct TitanLevel {
 	std::function<void()> afterTick;
 	bool loaded = false;
 
-	TitanLevel(const char* gameDir, const std::string& name, int size, bool start = true, const char* mod = nullptr)
+	TitanLevel(const char* gameDir, const std::string& name, int size, bool start = true, const char* mod = nullptr, bool statics = false)
 	{
 		files.setRootPath(gameDir);
 		if (mod) {
@@ -103,6 +103,9 @@ struct TitanLevel {
 		templates.setLoading(false);
 		console.run("Common/Material/MaterialManagerSettings.con", {}, out);
 		console.run(level + "Heightdata.con", {}, out);
+		if (statics) {
+			console.run(level + "StaticObjects.con", {}, out);
+		}
 		console.run(level + "GameModes/gpm_ti/" + std::to_string(size) + "/GamePlayObjects.con", {"host"}, out);
 		const terrain::Heightmap* ground = heightmaps.primary();
 		CHECK(ground && ground->loaded());

@@ -2708,8 +2708,10 @@ private:
 	void wheelProbes(Body& body, MeshActor& b, float seconds);
 	// A walker's legs' sphere against B (the MechLegs response's slot 0x24).
 	void legsSphere(Body& walker, MeshActor& a, MeshActor& b);
+	// A segment against the statics' and the other bodies' vehicle LOD meshes.
+	bool segmentHitsObjects(const physics::Vec3& from, const physics::Vec3& to, uint32_t self);
 	physics::MassShares addMeshContact(MeshActor& a, MeshActor& b, const physics::Vec3& point, const physics::Vec3& normal, float depth,
-		uint32_t materialA, uint32_t materialB, bool trunkPass, bool toA = true);
+		uint32_t materialA, uint32_t materialB, bool trunkPass, bool toA = true, bool legs = false);
 	std::vector<uint32_t> materialMap(const world::ObjectTemplate& objectTemplate) const;
 	void buildStaticCollision();
 	void addStaticCollision(const world::ObjectTemplate& objectTemplate, const physics::Mat3& rotation,

@@ -1185,3 +1185,86 @@ TEST(Titan_HeldGunshipReleasesIntactRemaster)
 {
 	heldGunshipReleasesIntact("mods/Project_Remaster_v17_Final");
 }
+
+// A walker crossing a Suez canal bridge. The legs' contacts with the deck are
+// the legs' own record, solved without friction like the ground's (0x006ce740;
+// the response's generic slot 0x2c is a bare return): through the generic
+// friction a walker falling gravityModifier 4 onto the deck had 0.8 of its
+// approach braked off its forward speed each tick (7.4 m/s to 1.5) and
+// jittered, taking the bridge at a crawl. And the feet's probes (0x00650e90)
+// meet the objects' meshes after the heightmap: over a deck both feet were
+// "off the ground" and the walker was pushed sideways by 30 until it fell in.
+struct BridgeCrossing {
+	float x, z, yaw, deckY;
+	float from = 55, to = 40; // metres before the middle to start at, after it to reach
+};
+
+static void walkerCrossesBridge(const char* mod, const char* tmpl, const BridgeCrossing& bridge, bool sprint)
+{
+	const char* gameDir = std::getenv("BF2142_GAME_DIR");
+	if (!gameDir) {
+		return;
+	}
+	TitanLevel level(gameDir, "Suez_Canal", 48, true, mod, true);
+	if (!level.loaded || !level.templates.find(tmpl)) {
+		return;
+	}
+	const float rad = bridge.yaw * 3.14159265f / 180;
+	const float dx = std::sin(rad), dz = std::cos(rad);
+	const float from = bridge.from; // the approach road, short of the bridge
+	const float x = bridge.x - dx * from, z = bridge.z - dz * from;
+	world::Object* walker = level.objects.create(level.templates.find(tmpl), {x, level.world->terrainHeight(x, z) + 6, z}, {bridge.yaw, 0, 0});
+	walker->setTeam(2);
+	level.run(2);
+	const int player = level.world->addPlayer("Walker", 2, false);
+	CHECK(level.world->spawnSoldier(player));
+	game::GameWorld::PlayerInfo info;
+	level.world->playerInfo(player, info);
+	const world::Vec3 at = walker->position();
+	level.world->setSoldierPosition(info.soldier, {at.x + dx * 1.5f, level.world->terrainHeight(at.x, at.z), at.z + dz * 1.5f});
+	level.run(0.5f);
+	game::SoldierInput use;
+	use.use = true;
+	level.world->setInput(player, use);
+	level.run(0.2f);
+	level.world->setInput(player, {});
+	level.run(0.5f);
+	level.world->playerInfo(player, info);
+	CHECK(info.vehicle == walker->id());
+	game::SoldierInput drive;
+	drive.throttle = 1;
+	drive.sprint = sprint;
+	float lowestOnDeck = 1e9f, along = -from;
+	const float hp = level.world->hitPoints(walker->id());
+	for (int i = 0; i < static_cast<int>(30 * (from + bridge.to) / 5) && along < bridge.to; ++i) {
+		level.world->setInput(player, drive);
+		level.world->tick(1 / 30.0f);
+		const world::Vec3 p = walker->position();
+		along = (p.x - bridge.x) * dx + (p.z - bridge.z) * dz;
+		if (std::fabs(along) < 15 || bridge.from > 100) {
+			lowestOnDeck = std::min(lowestOnDeck, p.y); // the heightmap is the canal bed far below
+		}
+	}
+	std::fprintf(stderr, "  %s %s at %.0f %.0f: %.1f m past the middle, lowest over the span %.1f (deck %.1f), hp %.0f of %.0f\n", mod ? "remaster" : "vanilla",
+		tmpl, bridge.x, bridge.z, along, lowestOnDeck, bridge.deckY, level.world->hitPoints(walker->id()), hp);
+	CHECK(along >= bridge.to);                // across at better than 5 m/s (7.4 walking)
+	CHECK(lowestOnDeck > bridge.deckY + 2.0f); // its feet on the deck (2.8 m under its origin), not in the canal
+	CHECK(level.world->hitPoints(walker->id()) >= hp);
+}
+
+TEST(Titan_WalkerCrossesTheSuezBridges)
+{
+	// The canal bridges of StaticObjects.con: bridge_industrial_01_c (65, -36),
+	// (-512, -36) and (-99, -128), bc_big_bridge_a (-185, -32) and (-303, -32).
+	// Walking and sprinting, with the vanilla and the Remaster mech.
+	// The two bc_big_bridge_a spans are one road across the canal, driven on
+	// the lane at z -32 from the west bank to the east bank.
+	const BridgeCrossing bridges[] = {{65, -36, 90, 47.2f}, {-512, -36, 90, 47.2f}, {-99, -128, 0, 47.2f}, {-245, -32, 90, 50.8f, 175, 130}};
+	for (const char* mod : {static_cast<const char*>(nullptr), "mods/Project_Remaster_v17_Final"}) {
+		for (const BridgeCrossing& bridge : bridges) {
+			for (const bool sprint : {false, true}) {
+				walkerCrossesBridge(mod, "us_heavy_mech", bridge, sprint);
+			}
+		}
+	}
+}
