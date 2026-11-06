@@ -810,6 +810,10 @@ void PlayerCamera::tick(float seconds)
 	}
 	const bool spawned = !m_alive;
 	m_alive = true;
+	if (spawned) {
+		// A seat's Chase/FlyBy choice or the death camera's toggle left this false; every new soldier starts first person.
+		firstPerson = true;
+	}
 	// The soldier: its first-person skeleton and system, its camera's field
 	// of view and start (the soldier's first child camera, 0x005890a0).
 	const world::ObjectTemplate* soldierTemplate = me.soldierTemplate;

@@ -124,6 +124,30 @@ TEST(PlayerCamera_LivingInfantryKeepsFirstPerson)
 	CHECK(camera.selectView(1));
 }
 
+TEST(PlayerCamera_RespawnAfterDyingInThirdPersonSeatIsFirstPerson)
+{
+	world::ObjectTemplateManager templates;
+	world::ObjectManager objects;
+	auto* soldier = templates.create("Soldier", "infantry");
+	const auto rider = objects.create(soldier, {})->id();
+	game::GameWorld round(templates, objects);
+	anim::AnimationSystems systems(nullptr);
+	PlayerCamera camera(round, systems, nullptr);
+	bool alive = true;
+	camera.setRemote([&](PlayerCamera::Remote& me) {
+		me.alive = alive; me.soldier = rider; me.soldierTemplate = soldier;
+		return true;
+	});
+	camera.tick(1 / 30.0f);
+	camera.firstPerson = false; // a seat's chase view (toggleMode/selectView) when the soldier dies
+	alive = false;
+	camera.tick(1 / 30.0f);
+	alive = true;
+	camera.tick(1 / 30.0f);
+	CHECK(camera.firstPerson);
+	CHECK(camera.insideView());
+}
+
 TEST(VehicleHud_GeometryOnlyFirearmHasNoFireGroup)
 {
 	world::ObjectTemplateManager templates;
