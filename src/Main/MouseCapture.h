@@ -10,4 +10,17 @@ constexpr bool gameplayMouseCaptureWanted(bool playing, bool pointer, bool menuU
 	return playing && !pointer && !menuUp && focused;
 }
 
+// SDL reports its own flags, which can stay set while the OS-level capture was
+// dropped (focus return, fullscreen/Space change, a click after Mission Control).
+// A refresh event therefore releases and re-takes capture even when SDL agrees.
+constexpr bool mouseCaptureNeedsRelease(bool wanted, bool relative, bool grabbed, bool refresh)
+{
+	return (relative || grabbed) && (!wanted || refresh);
+}
+
+constexpr bool mouseCaptureNeedsAcquire(bool wanted, bool relative, bool grabbed)
+{
+	return wanted && (!relative || !grabbed);
+}
+
 } // namespace dice::hfe

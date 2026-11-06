@@ -496,7 +496,23 @@ int interactive(const render::LevelSources& sources, const ViewerOptions& option
 				options.gameControllers->beginFrame();
 			}
 			Uint32 pressedButtons = 0;
+			bool captureRefresh = false; // an event after which the OS may have dropped capture
 			while (SDL_PollEvent(&event)) {
+				switch (event.type) {
+				case SDL_EVENT_WINDOW_FOCUS_GAINED:
+				case SDL_EVENT_WINDOW_MOUSE_ENTER:
+				case SDL_EVENT_WINDOW_SHOWN:
+				case SDL_EVENT_WINDOW_EXPOSED:
+				case SDL_EVENT_WINDOW_RESTORED:
+				case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
+				case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
+				case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
+				case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+					captureRefresh = true;
+					break;
+				default:
+					break;
+				}
 				if (sdlControllers && sdlControllers->handle(event)) {
 					continue;
 				}
@@ -604,20 +620,26 @@ int interactive(const render::LevelSources& sources, const ViewerOptions& option
 			// A Flash menu can be active independently of the HUD pointer flag.
 			const bool focused = (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0;
 			const bool capture = gameplayMouseCaptureWanted(playing, pointer, menuUp, focused);
-			if (SDL_GetWindowRelativeMouseMode(window) != capture) {
-				if (!SDL_SetWindowRelativeMouseMode(window, capture)) {
+			bool relativeNow = SDL_GetWindowRelativeMouseMode(window);
+			bool grabbedNow = SDL_GetWindowMouseGrab(window);
+			if (mouseCaptureNeedsRelease(capture, relativeNow, grabbedNow, captureRefresh)) {
+				if (std::getenv("BF2142_INPUT_TRACE")) std::printf("mouse-capture release refresh=%d wanted=%d\n", captureRefresh, capture);
+				SDL_SetWindowMouseGrab(window, false);
+				SDL_SetWindowRelativeMouseMode(window, false);
+				relativeNow = grabbedNow = false;
+			}
+			if (mouseCaptureNeedsAcquire(capture, relativeNow, grabbedNow)) {
+				if (!relativeNow && !SDL_SetWindowRelativeMouseMode(window, true)) {
 					if (!warnedRelativeMode) {
-						std::fprintf(stderr, "SDL_SetWindowRelativeMouseMode(%s): %s\n", capture ? "true" : "false", SDL_GetError());
+						std::fprintf(stderr, "SDL_SetWindowRelativeMouseMode(true): %s\n", SDL_GetError());
 						warnedRelativeMode = true;
 					}
 				} else {
 					warnedRelativeMode = false;
 				}
-			}
-			if (SDL_GetWindowMouseGrab(window) != capture) {
-				if (!SDL_SetWindowMouseGrab(window, capture)) {
+				if (!grabbedNow && !SDL_SetWindowMouseGrab(window, true)) {
 					if (!warnedMouseGrab) {
-						std::fprintf(stderr, "SDL_SetWindowMouseGrab(%s): %s\n", capture ? "true" : "false", SDL_GetError());
+						std::fprintf(stderr, "SDL_SetWindowMouseGrab(true): %s\n", SDL_GetError());
 						warnedMouseGrab = true;
 					}
 				} else {

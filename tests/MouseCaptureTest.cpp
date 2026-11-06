@@ -17,3 +17,20 @@ TEST(Viewer_MouseCaptureFollowsFocusAndMenuOwnership)
 	CHECK(gameplayMouseCaptureWanted(true, false, false, true));
 	CHECK(!gameplayMouseCaptureWanted(false, false, false, true));
 }
+
+TEST(Viewer_MouseCaptureRefreshesWhenSdlStateIsStale)
+{
+	// Wanted and SDL already agrees: leave it alone unless a refresh event arrived.
+	CHECK(!mouseCaptureNeedsRelease(true, true, true, false));
+	CHECK(!mouseCaptureNeedsAcquire(true, true, true));
+	// Focus/fullscreen events cycle capture even though SDL still reports it on.
+	CHECK(mouseCaptureNeedsRelease(true, true, true, true));
+	CHECK(mouseCaptureNeedsAcquire(true, false, false));
+	// Not wanted: release whatever is on; nothing to release when already off.
+	CHECK(mouseCaptureNeedsRelease(false, true, false, false));
+	CHECK(mouseCaptureNeedsRelease(false, false, true, false));
+	CHECK(!mouseCaptureNeedsRelease(false, false, false, true));
+	CHECK(!mouseCaptureNeedsAcquire(false, false, false));
+	// Half-applied state (relative on, grab off) is completed.
+	CHECK(mouseCaptureNeedsAcquire(true, true, false));
+}
