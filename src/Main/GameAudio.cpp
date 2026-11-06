@@ -390,6 +390,9 @@ void GameAudio::weapons(const Camera& camera)
 			// The fire component's mode (slot 0xdc): the hand weapon's, a seat
 			// gun's automatic (the rewrite's seats fire while held).
 			fire.mode = p && !p->vehicle ? p->fireMode : 2;
+			// Local hand-weapon sounds follow accepted shots in every view:
+			// an external camera changes the sample to 3P, not its cadence.
+			fire.synchronizeShots = event.player == local && local >= 0 && p && !p->vehicle;
 			const int burst = weapon ? std::max(1, static_cast<int>(number(*weapon, "fire.burstSize", 3))) : 1;
 			fire.burstRounds = fire.mode == 0 ? 1 : fire.mode == 1 ? burst : std::max(1, p ? p->roundsInMag : 1);
 			fire.held = false;

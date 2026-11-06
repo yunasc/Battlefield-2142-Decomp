@@ -2699,7 +2699,15 @@ void ObjectEffects::update(const std::vector<ObjectState>& objects, EffectManage
 				updateGround(object, tracked.velocity, tracked, i, effects, partPose, bundleView);
 				continue;
 			}
-			const bool start = (created && b.startAtCreation)
+			// GenericProjectiles aren't ObjectManager objects in this rewrite,
+			// but their shipped EffectBundle children (e_RifleRocket_trail,
+			// e_av_rifle_trail, etc.) receive the projectile's creation/fire
+			// event in the original. Start their startOnEffects=0 bundles when
+			// the projectile state first appears; main.cpp supplies that state
+			// for the lifetime of each flying round.
+			const bool projectileFire = created && object.objectTemplate->typeName() == "GenericProjectile"
+				&& b.startOnEffects == 0;
+			const bool start = (created && b.startAtCreation) || projectileFire
 				|| (object.occupied && !tracked.occupied && (b.startOnEffects & kEntered) != 0)
 				|| (object.effects & b.startOnEffects) != 0;
 			if (start && !effects.emitting(object.id, tag)) {

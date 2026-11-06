@@ -195,7 +195,9 @@ pushing a stick. A gamepad reads as an Xbox 360 pad.
 | E | Enter or leave a vehicle nearby |
 | F1 … F8 | Change seats |
 | F / X | In a seat: next weapon / flares or active defence (keys 1 … 9 pick a seat weapon; the alt-fire button arms a TV-guided missile) |
-| C | First person ↔ chase view |
+| C | Cycle vehicle cameras (living infantry stays in first person) |
+| Enter | Open or close deployment; its Suicide button requests redeployment |
+| 7 | Select frag grenades when equipped; left button throws (G is kit pickup/drop) |
 | Tab | Scoreboard |
 | M / N / Left Alt | Big map / minimap zoom / 3D name tags |
 | Q / T | Radio menu / squad and commander menu |

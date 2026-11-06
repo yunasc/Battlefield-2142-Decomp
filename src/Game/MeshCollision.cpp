@@ -543,10 +543,7 @@ bool GameWorld::meshPair(MeshActor& a, MeshActor& b, float seconds, bool trunkOn
 	// A team's PlayerControlObject passes the other's force fields and
 	// doors (0x006bb050's start: interface 0xc4c5 slot 0x9c, team 1 against
 	// collisionGroups 0x100, team 2 against 0x200; shipped: as_* 256, eu_* 512).
-	const auto passes = [](const MeshActor& pco, const MeshActor& other) {
-		return (pco.team == 1 && (other.collisionGroups & 0x100)) || (pco.team == 2 && (other.collisionGroups & 0x200));
-	};
-	if (passes(a, b) || passes(b, a)) {
+	if (teamPasses(a, b) || teamPasses(b, a)) {
 		return true;
 	}
 	const Vec3 motion = (a.velocity - b.velocity) * seconds;
@@ -786,11 +783,14 @@ void GameWorld::wheelProbes(Body& body, MeshActor& b, float seconds)
 	const Mat3& r = body.body.rotation;
 	const Vec3 right = r.transform({1, 0, 0}), up = r.transform({0, 1, 0}), forward = r.transform({0, 0, 1});
 	MeshActor a = actorOf(body);
+	if (teamPasses(a, b) || teamPasses(b, a)) {
+		return; // the wheel's probe is the mover of its own: it passes its team's fields as the hull does
+	}
 	const auto& wheels = body.vehicle->wheels();
 	for (size_t w = 0; w < wheels.size(); ++w) {
 		const Vehicle::Wheel& wheel = wheels[w];
 		const float h = std::fabs(wheel.radius);
-		const Vec3 mount {wheel.mount.x, wheel.mount.y + wheel.compression, wheel.mount.z};
+		const Vec3 mount = wheel.mount; // the Spring puts the wheel back at rest each step (0x006caef0)
 		const Vec3 p0 = body.body.position + r.transform(mount);
 		const float partRadius = w < body.wheelRadii.size() ? body.wheelRadii[w] : h;
 		const float motion = (length(body.body.velocity) + length(b.body ? b.body->body.velocity : Vec3 {})) * seconds;
