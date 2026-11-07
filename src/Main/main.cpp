@@ -1304,6 +1304,13 @@ void updateHud(hud::HudManager& hud, const host::HudWorld& world, game::GameWorl
 		dice::hfe::menu::VehicleHudInput look;
 		look.vehicle = vehicle->objectTemplate();
 		look.armor = max > 0 ? left / max : 1.0f;
+		{
+			// Matrix rows' y (Mat3::yawPitchRoll's inverse): forward.y = -sin(pitch),
+			// right.y = sin(roll) cos(pitch).
+			const float rad = 3.14159265f / 180.0f, pitch = vehicle->rotation().y * rad;
+			look.forwardY = -std::sin(pitch);
+			look.rightY = std::sin(vehicle->rotation().z * rad) * std::cos(pitch);
+		}
 		// The walkers' step (0x007a0940): the vehicle's own animation system's
 		// walk cycle (a joined client's: its ghost's, animateRemoteVehicle).
 		look.walking = round.walkCycle(vehicle->id(), look.walkLength, look.walkTime);

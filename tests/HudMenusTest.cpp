@@ -522,11 +522,11 @@ TEST(HudVehicle_PassengersAndScoreboardSquads)
 	in.walkLength = 1.6f;
 	in.walkTime = 0.4f;
 	vehicleHud.update(hudManager, in);
-	CHECK(std::fabs(hudManager.number("MechFootAnimationValue") - 2) < 1e-5f);
+	CHECK(std::fabs(hudManager.number("MechFootAnimationValue") - 2 * 57.29578f) < 1e-3f); // degrees
 	in.walking = false;
 	in.walkTime = 1.2f;
 	vehicleHud.update(hudManager, in);
-	CHECK(std::fabs(hudManager.number("MechFootAnimationValue") - 2) < 1e-5f);
+	CHECK(std::fabs(hudManager.number("MechFootAnimationValue") - 2 * 57.29578f) < 1e-3f); // degrees
 
 	std::vector<menu::ScoreboardMember> members {
 		{0, 2, false, 30, 0, 3, 1, 50}, {1, 0, false, 20, 0, 2, 2, 0}, {2, 1, true, 10, 0, 1, 0, 0}, {3, 2, false, 5, 0, 0, 4, 30}};
@@ -1138,6 +1138,27 @@ TEST(HudRadar_DecoyAndVehicleMarkers)
 	CHECK(markers.size() == 1 && markers[0].texture == "Ingame/mini_tank.tga" && markers[0].x == 100 && markers[0].size == 16);
 }
 
+// The gunships' horizon (0x007a2b50) and climb arrow: a banked, pitched
+// vehicle moves the bar; the climb is degrees for the compass strip.
+TEST(HudVehicle_HorizonAndClimb)
+{
+	hud::HudManager hud(nullptr);
+	menu::VehicleHud vehicleHud;
+	menu::VehicleHudInput in;
+	vehicleHud.update(hud, in);
+	CHECK(hud.number("VehicleBanking") == 0 && hud.number("AngleOfAttack") == 296);
+	in.rightY = -0.5f; // rolled right 30 degrees
+	in.forwardY = 0.2f; // nose up
+	in.climb = 5;
+	vehicleHud.update(hud, in);
+	CHECK(std::fabs(hud.number("VehicleBanking") + 30.0f) < 1e-3f); // counter-rolls (clockwise-positive quads)
+	CHECK(hud.number("AngleOfAttack") == std::ceil(0.2f * 100.0f + 296.0f));
+	// 4 pi / maxClimbSpeed(10) x 5 x 0.1 rad = 0.628 rad = 36 degrees
+	CHECK(std::fabs(hud.number("VehicleElevationSpeedAngle") - 36.0f) < 1e-2f);
+	vehicleHud.update(hud, in); // retail's "easing" assigns both terms: no accumulation
+	CHECK(std::fabs(hud.number("VehicleElevationSpeedAngle") - 36.0f) < 1e-2f);
+}
+
 // The vehicle HUD's torque arrows and sprint (0x007a2e60): the torque eased
 // a hundredth a frame (its source +0x2f4 has no writer: 0), the stamina
 // bar while sprinting or below 1 and its text for 3 s after it fell.
@@ -1149,7 +1170,7 @@ TEST(HudVehicle_TorqueAndStamina)
 	in.seconds = 0.5f;
 	vehicleHud.update(hud, in);
 	CHECK(hud.number("TorqueAngle") == 0 && hud.string("TorqueString") == "0");
-	CHECK(std::fabs(hud.number("SecondTorqueAngle") - 6.2831855f) < 1e-4f);
+	CHECK(std::fabs(hud.number("SecondTorqueAngle") - 360.0f) < 1e-2f); // radians x 57.29578: degrees
 	CHECK(hud.number("VehicleStaminaShow") == 0 && hud.number("VehicleStamina") == 1);
 	in.torque = 1;
 	vehicleHud.update(hud, in);
