@@ -102,6 +102,8 @@ struct ViewerOptions {
 	// Menus (the spawn screen): while it says so the mouse is a pointer,
 	// and left clicks go to onClick in the HUD's 800 x 600 screen.
 	std::function<bool()> wantsPointer;
+	// Which term of wantsPointer is true (null when none); only for the log.
+	std::function<const char*()> pointerReason;
 	std::function<void(float x, float y)> onClick;
 	// The right button's clicks and the pointer's moves (the HUD's
 	// right-click map menus, button highlights), same screen.

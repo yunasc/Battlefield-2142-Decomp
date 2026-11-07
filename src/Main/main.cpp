@@ -8938,10 +8938,17 @@ int runGame(Options& options, Session& session)
 				round.setPlayerInput(input);
 			};
 			// The spawn screen: a pointer, and clicking a spawn icon picks it.
-			viewer.wantsPointer = [&hudPlayer, &hudLocal, &showMenu, &startedGame, &endOfRound, &commanderScreen] {
+			const auto pointerReason = [&hudPlayer, &hudLocal, &showMenu, &startedGame, &endOfRound, &commanderScreen]() -> const char* {
 				game::GameWorld::PlayerInfo me;
-				return (showMenu && startedGame) || endOfRound.loaded() || commanderScreen || g_deploymentOpen || (hudPlayer(hudLocal(), me) && !me.alive);
+				if (showMenu && startedGame) return "esc-menu";
+				if (endOfRound.loaded()) return "end-of-round";
+				if (commanderScreen) return "commander-screen";
+				if (g_deploymentOpen) return "deployment";
+				if (hudPlayer(hudLocal(), me) && !me.alive) return "dead-or-no-player";
+				return nullptr;
 			};
+			viewer.wantsPointer = [pointerReason] { return pointerReason() != nullptr; };
+			viewer.pointerReason = pointerReason;
 			viewer.onClick = [&round, &hudManager, &commanderClick, &mapMenuPoint](float x, float y) {
 				if (g_mapMenu != 0) {
 					// An open right-click menu takes the click (its rows'
@@ -9165,6 +9172,9 @@ int runGame(Options& options, Session& session)
 			};
 			viewer.wantsPointer = [inner = viewer.wantsPointer, &commRoses] {
 				return !commRoses.shown().empty() || (inner && inner());
+			};
+			viewer.pointerReason = [inner = viewer.pointerReason, &commRoses]() -> const char* {
+				return !commRoses.shown().empty() ? "comm-rose" : inner ? inner() : nullptr;
 			};
 			viewer.onPlayerInput = [inner = viewer.onPlayerInput, &chat, &squadNameBox, &round, &session,
 										keysWere = std::array<bool, 3> {}](const ViewerOptions::PlayerInput& in) mutable {

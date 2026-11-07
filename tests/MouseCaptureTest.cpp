@@ -1,3 +1,4 @@
+#include <string>
 #include "Main/MouseCapture.h"
 #include "TestMain.h"
 
@@ -33,4 +34,13 @@ TEST(Viewer_MouseCaptureRefreshesWhenSdlStateIsStale)
 	CHECK(!mouseCaptureNeedsAcquire(false, false, false));
 	// Half-applied state (relative on, grab off) is completed.
 	CHECK(mouseCaptureNeedsAcquire(true, true, false));
+}
+
+TEST(Viewer_MouseCaptureBlockerNamesTheFlag)
+{
+	CHECK(std::string(mouseCaptureBlocker(true, false, false, true)) == "none");
+	CHECK(std::string(mouseCaptureBlocker(false, false, false, true)) == "not-playing");
+	CHECK(std::string(mouseCaptureBlocker(true, true, true, false)) == "pointer");
+	CHECK(std::string(mouseCaptureBlocker(true, false, true, false)) == "menu");
+	CHECK(std::string(mouseCaptureBlocker(true, false, false, false)) == "unfocused");
 }

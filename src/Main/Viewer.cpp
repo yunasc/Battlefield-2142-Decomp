@@ -471,6 +471,9 @@ int interactive(const render::LevelSources& sources, const ViewerOptions& option
 		bool warnedRelativeMode = false;
 		bool warnedMouseGrab = false;
 		int tracedCaptureState = -1;
+		// A detached process from the launcher applet may start behind it, and then
+		// never receives focus (so never captures) until the user clicks.
+		SDL_RaiseWindow(window);
 		input::MenuWheelSteps menuWheel;
 		MenuCursor menuCursor;
 		while (running) {
@@ -645,14 +648,19 @@ int interactive(const render::LevelSources& sources, const ViewerOptions& option
 					warnedMouseGrab = false;
 				}
 			}
-			if (std::getenv("BF2142_INPUT_TRACE")) {
+			{
+				// Always on, one line per change (not per frame): says which flag blocks capture.
 				const bool relative = SDL_GetWindowRelativeMouseMode(window);
 				const bool grabbed = SDL_GetWindowMouseGrab(window);
 				const bool fullscreen = (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
-				const int state = focused | (pointer << 1) | (menuUp << 2) | (relative << 3) | (grabbed << 4) | (fullscreen << 5);
+				const char* why = options.pointerReason ? options.pointerReason() : nullptr;
+				const int state = focused | (pointer << 1) | (menuUp << 2) | (relative << 3) | (grabbed << 4) | (fullscreen << 5)
+					| (playing << 6) | (capture << 7) | (why ? static_cast<int>(why[0]) << 8 : 0);
 				if (state != tracedCaptureState) {
-					std::printf("window-input focus=%d pointer=%d menu=%d relative=%d grabbed=%d fullscreen=%d\n",
-						focused, pointer, menuUp, relative, grabbed, fullscreen);
+					std::printf("mouse-capture: wanted=%d blocker=%s focused=%d pointer=%d(%s) menu=%d playing=%d actual relative=%d grabbed=%d fullscreen=%d\n",
+						capture, mouseCaptureBlocker(playing, pointer, menuUp, focused), focused, pointer, why ? why : "-", menuUp,
+						playing, relative, grabbed, fullscreen);
+					std::fflush(stdout);
 					tracedCaptureState = state;
 				}
 			}
