@@ -2280,3 +2280,60 @@ TEST(PlayerCamera_TankZoomRetainsShortClicks)
 		}
 	}
 }
+
+// The gunships' pilot gun (MultiFireComp, fire.addFireRate 0 = single fire, mag 10, ammo.autoReload),
+// vanilla and Remaster alike (Remaster adds only a DefaultZoomComp, which the world never sees): a held
+// trigger fires one round, each fresh press one more, an emptied magazine reloads itself and the
+// next press fires again. Nothing else locks the gun.
+TEST(Vehicles_GunshipPilotGunFiresPerPressAndReloads)
+{
+	if (!gameDir()) {
+		return;
+	}
+	for (const char* mod : {"mods/bf2142", "mods/Project_Remaster_v17_Final"}) {
+		for (const char* name : {"as_ag", "us_ag"}) {
+			Garage g(gameDir(), mod);
+			if (!g.loaded || !g.templates.find(name)) {
+				continue;
+			}
+			const uint32_t v = g.start(name, {0, 4, 6});
+			CHECK(g.enter(v));
+			const int me = g.world->localPlayer();
+			const auto* gun = g.world->gun(v, 0);
+			CHECK(gun != nullptr);
+			if (!gun) {
+				continue;
+			}
+			CHECK(gun->fireMode() == 0);
+			const auto rounds = [&] {
+				game::GameWorld::PlayerInfo info;
+				g.world->playerInfo(me, info);
+				return static_cast<int>(info.gunShots);
+			};
+			g.run(8); // the weapon's draw
+			const int first = rounds();
+			game::SoldierInput hold;
+			hold.fire = true;
+			for (int i = 0; i < 60; ++i) {
+				g.world->setPlayerInput(hold);
+				g.world->tick(1 / 30.0f);
+			}
+			CHECK(rounds() == first + 1); // held: one round
+			g.world->setPlayerInput({});
+			g.run(1);
+			// Tapped through the whole magazine, its reload and on: a round every press.
+			int fired = 0;
+			for (int i = 0; i < 40; ++i) {
+				game::SoldierInput tap;
+				tap.fire = true;
+				const int before = rounds();
+				g.world->setPlayerInput(tap);
+				g.world->tick(1 / 30.0f);
+				fired += rounds() > before;
+				g.world->setPlayerInput({});
+				g.run(1.2f); // past the cooldown, and the reload when the magazine ran out
+			}
+			CHECK(fired == 40);
+		}
+	}
+}
