@@ -1277,7 +1277,12 @@ void updateHud(hud::HudManager& hud, const host::HudWorld& world, game::GameWorl
 	// commander screen and its states (0x10, 0x12.., 0x17.., 0x21, 0x22).
 	const bool crosshairActive = !scoreboard && !commanderScreen && !g_bigMap && !g_deploymentOpen;
 	hud.set("CrosshairIconShow", alive && !inVehicle && crosshairActive ? 1 : 0);
-	hud.set("HitIndicatorIconShow", 0);
+	// The weapon HUD's hit indicator (0x007be6e0): the local player's alpha
+	// (Player +0x2a4, 1 after a hit, fading 3 a second) while the crosshair
+	// is active; shown when it is not 0. The vehicle HUD shares the variables.
+	const float hitAlpha = connected && crosshairActive ? round.hitIndicator(round.localPlayer()) : 0.0f;
+	hud.set("HitIndicatorIconAlpha", hitAlpha);
+	hud.set("HitIndicatorIconShow", hitAlpha != 0 ? 1 : 0);
 	// In a vehicle: its icon and armour, and a gunner's gun (its HUD by
 	// the firearm's weaponHud.guiIndex, the turret's direction).
 	hud.set("VehicleIconShow", inVehicle ? 1 : 0);
@@ -4197,6 +4202,7 @@ int runGame(Options& options, Session& session)
 			round.setFriendlyFire({static_cast<float>(sv.soldierFriendlyFire), static_cast<float>(sv.vehicleFriendlyFire),
 				static_cast<float>(sv.soldierSplashFriendlyFire), static_cast<float>(sv.vehicleSplashFriendlyFire)});
 			round.setFriendlyFireWithMines(sv.friendlyFireWithMines);
+			round.setHitIndicator(sv.hitIndicator);
 		}
 		// The bots see as far as the level's fog lets them (AIDLL 0x10056b20).
 		botSettings.levelFog = lights.fogStartEndAndBase;

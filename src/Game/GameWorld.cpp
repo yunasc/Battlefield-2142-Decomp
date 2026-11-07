@@ -694,6 +694,9 @@ void GameWorld::tick(float seconds)
 	}
 	setRagDollLevels();
 	stepPlayers(seconds);
+	for (const auto& player : m_players) {
+		player->hitIndicator = std::max(0.0f, player->hitIndicator - seconds * 3.0f); // 0x005912c0
+	}
 	stepPods(seconds);
 	stepParachutes(seconds);
 	stepSilos(seconds);
@@ -908,7 +911,24 @@ void GameWorld::damage(uint32_t object, float amount, uint32_t projectileMateria
 			mod *= it->second;
 		}
 	}
+	// A hit of the attacker's that did damage raises its hit indicator (the
+	// game logic's hit slots 0x4ba440.. call slot 0x128(1, shooter's player),
+	// 0x004ba070 -> Player 0x20c(1) -> +0x2a4 = 1 with sv.hitIndicator); no
+	// team test there, the friendly-fire factor above gives 0 none.
+	if (m_hitIndicator && mod > 0 && amount > 0 && attacker >= 0) {
+		Player* from = findPlayer(attacker);
+		const bool own = from && (object == from->object || (from->vehicle != 0 && object == from->vehicle));
+		if (from && !own && hitPoints(object) >= 0) {
+			from->hitIndicator = 1;
+		}
+	}
 	loseHitPoints(object, amount * mod, attacker);
+}
+
+float GameWorld::hitIndicator(int player) const
+{
+	const Player* p = findPlayer(player);
+	return p ? p->hitIndicator : 0.0f;
 }
 
 void GameWorld::loseHitPoints(uint32_t object, float amount, int attacker)

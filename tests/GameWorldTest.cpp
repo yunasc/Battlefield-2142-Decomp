@@ -193,6 +193,58 @@ TEST(GameWorld_SoldiersShootAndDie)
 	CHECK(range.count("PlayerDeath") == 1 && range.count("PlayerSpawn") == 3);
 }
 
+// The hit indicator (Player +0x2a4, 0x004ba070 / 0x005912c0): a round that
+// damages something raises the shooter's alpha to 1, fading 3 a second; a
+// miss, sv.hitIndicator off, or a hit on a zero-friendly-fire teammate don't.
+TEST(GameWorld_HitIndicatorRaisedByDamageAndFades)
+{
+	const auto run = [](bool enemy, bool setting, bool aim) {
+		Range range;
+		range.world->setHitIndicator(setting);
+		game::GameWorld::FriendlyFire ff;
+		ff.soldier = 0;
+		range.world->setFriendlyFire(ff);
+		const int bot = range.world->addPlayer("Bot", enemy ? 1 : 2, true);
+		if (aim) {
+			CHECK(range.world->spawnSoldier(bot));
+		}
+		CHECK(range.world->spawnPlayer(2) != nullptr);
+		const int me = range.world->localPlayer();
+		game::SoldierInput fire;
+		fire.fire = true;
+		range.world->setPlayerInput(fire);
+		float peak = 0;
+		for (int i = 0; i < 6; ++i) {
+			range.world->tick(1 / 30.0f);
+			peak = std::max(peak, range.world->hitIndicator(me));
+		}
+		range.world->setPlayerInput({});
+		return peak;
+	};
+	CHECK(run(true, true, true) > 0.5f);
+	CHECK(run(true, true, false) == 0);
+	CHECK(run(true, false, true) == 0);
+	CHECK(run(false, true, true) == 0);
+
+	Range range;
+	const int bot = range.world->addPlayer("Bot", 1, true);
+	CHECK(range.world->spawnSoldier(bot));
+	CHECK(range.world->spawnPlayer(2) != nullptr);
+	const int me = range.world->localPlayer();
+	game::SoldierInput fire;
+	fire.fire = true;
+	range.world->setPlayerInput(fire);
+	for (int i = 0; i < 6 && range.world->hitIndicator(me) == 0; ++i) {
+		range.world->tick(1 / 30.0f);
+	}
+	range.world->setPlayerInput({});
+	CHECK(range.world->hitIndicator(me) > 0.5f);
+	for (int i = 0; i < 12; ++i) {
+		range.world->tick(1 / 30.0f); // 0.4 s at 3 a second: gone
+	}
+	CHECK(range.world->hitIndicator(me) == 0);
+}
+
 TEST(GameWorld_InitialDeploymentJoinsWithoutDeathThenSpawnsAtChoice)
 {
 	Range range;

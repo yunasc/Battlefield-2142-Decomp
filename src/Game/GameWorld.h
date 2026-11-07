@@ -982,6 +982,13 @@ public:
 	// sv.friendlyFireWithMines (settings +0x288, copied to DAT_00a3fcc0
 	// +0x58 by 0x00430e20; on by default): see the mines' trigger.
 	void setFriendlyFireWithMines(bool on) { m_friendlyFireWithMines = on; }
+	// sv.hitIndicator (settings +0xfb; on by default): the game logic's hit
+	// slot 0x128 (0x004ba070) raises the shooter's Player +0x2a4 only with it.
+	void setHitIndicator(bool on) { m_hitIndicator = on; }
+	// The player's hit-indicator alpha (Player +0x2a4, vtable 0x90): 1 after
+	// its round damaged something, fading 3 a second (0x005912c0). The weapon
+	// HUD shows HitIndicatorIconShow when it is not 0 (0x007be6e0).
+	float hitIndicator(int player) const;
 	// The sea's height, or none (false).
 	bool waterLevel(float& level) const
 	{
@@ -2530,6 +2537,7 @@ private:
 	std::map<uint32_t, float> m_outsideVehicles; // +0x304: abandoned vehicles' seconds outside
 	FriendlyFire m_friendlyFire;
 	bool m_friendlyFireWithMines = true;
+	bool m_hitIndicator = true;
 	// The seats' IK objects (seatIkTargets): the template path from the
 	// vehicle's root, by root template and seat (ik null: none).
 	struct IkPath {
@@ -2867,6 +2875,7 @@ private:
 		std::string weaponTemplate;
 		int roundsFired = 0;      // since the scripts last cleared them
 		int roundsHit = 0;
+		float hitIndicator = 0; // Player +0x2a4
 		bool useHeld = false;
 		// Animation: the soldier's system and the weapon's over it.
 		std::unique_ptr<anim::AnimationState> bodyAnimation;
