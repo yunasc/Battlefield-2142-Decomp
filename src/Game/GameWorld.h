@@ -444,6 +444,7 @@ public:
 		uint32_t object = 0;
 		std::string weapon; // the weapon's template
 		physics::Vec3 position;
+		int fireMode = -1; // a seat gun's fire component mode (0 single, 1 burst, 2 automatic); -1 unknown
 	};
 	std::vector<WeaponSoundEvent> takeWeaponSounds() { return std::exchange(m_weaponSounds, {}); }
 
@@ -3336,7 +3337,7 @@ private:
 	std::vector<SoundEvent> m_sounds;
 	std::vector<WeaponSoundEvent> m_weaponSounds;
 	void weaponSound(WeaponSoundEvent::Kind kind, const Player& player, uint32_t object, const std::string& weapon,
-		const physics::Vec3& position);
+		const physics::Vec3& position, int fireMode = -1);
 	void stepSeatCorpses(float seconds);
 	// Bodies after PlayerDeath, with their ragdolls (the soldier's armour
 	// stays a wreck until its countdown, 0x00652380, removes the object).

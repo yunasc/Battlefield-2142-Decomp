@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 
 namespace dice::hfe {
 
@@ -383,13 +384,17 @@ void GameAudio::weapons(const Camera& camera)
 			: event.kind == Kind::SwitchFireRate                          ? sound::GameSounds::WeaponEvent::SwitchFireRate
 			: event.kind == Kind::TriggerClick                            ? sound::GameSounds::WeaponEvent::TriggerClick
 																		  : sound::GameSounds::WeaponEvent::Deploy;
-		const uint64_t user = (static_cast<uint64_t>(static_cast<uint32_t>(event.player)) << 32) | event.object;
+		const game::GameWorld::PlayerInfo* seated = event.player >= 0 ? info(event.player) : nullptr;
+		// A seat carries several fire components (cannon, launcher): each is
+		// its own sound component (0x005dbdc0), so key the state by weapon.
+		const uint32_t part = seated && seated->vehicle ? static_cast<uint32_t>(std::hash<std::string>()(event.weapon)) : 0;
+		const uint64_t user = (static_cast<uint64_t>(static_cast<uint32_t>(event.player)) << 32) | (event.object ^ part);
 		sound::GameSounds::FireInfo fire;
 		if (event.kind == Kind::Fire) {
 			const game::GameWorld::PlayerInfo* p = event.player >= 0 ? info(event.player) : nullptr;
-			// The fire component's mode (slot 0xdc): the hand weapon's, a seat
-			// gun's automatic (the rewrite's seats fire while held).
-			fire.mode = p && !p->vehicle ? p->fireMode : 2;
+			// The fire component's mode (slot 0xdc): the hand weapon's or the
+			// seat gun's own (no fire.addFireRate: automatic).
+			fire.mode = p && !p->vehicle ? p->fireMode : event.fireMode >= 0 ? event.fireMode : 2;
 			// Local hand-weapon sounds follow accepted shots in every view:
 			// an external camera changes the sample to 3P, not its cadence.
 			fire.synchronizeShots = event.player == local && local >= 0 && p && !p->vehicle;
@@ -410,7 +415,7 @@ void GameAudio::weapons(const Camera& camera)
 	for (auto it = m_triggers.begin(); it != m_triggers.end();) {
 		const int player = static_cast<int>(static_cast<uint32_t>(it->first >> 32));
 		const game::GameWorld::PlayerInfo* p = info(player);
-		const bool held = p && p->alive && p->firing;
+		const bool held = p && p->alive && (p->firing || p->altFiring);
 		if (!held || m_tick - it->second.lastRound > it->second.interval) {
 			m_sounds.releaseTrigger(it->first);
 			it = m_triggers.erase(it);

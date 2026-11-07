@@ -819,3 +819,34 @@ TEST(GameSounds_LocalRoundsDoNotFreeRun)
 	s.game.weapon(sound::GameSounds::WeaponEvent::Fire, "rifle", true, {}, true, 1, 0, &fire);
 	CHECK(!s.game.fireLooping(1) && s.triggered.size() == 7);
 }
+
+// A seat's launcher (fire.addFireRate 0) plays its one-shot sample for each
+// round; a seat's minigun (no fire rates: automatic) loops it until released;
+// the cannon and rockets of one seat are separate fire components, so one's
+// rounds don't cut the other's loop.
+TEST(GameSounds_SeatCannonAndRocketsDoNotCutEachOther)
+{
+	Sounds s;
+	addSoundTemplate(s.templates, "S_cannon_Fire3P");
+	addSoundTemplate(s.templates, "S_rocket_Fire3P");
+	using E = sound::GameSounds::WeaponEvent;
+	sound::GameSounds::FireInfo single;
+	single.mode = 0;
+	single.burstRounds = 1;
+	single.roundsPerMinute = 120;
+	for (int i = 0; i < 3; ++i) {
+		s.game.weapon(E::Fire, "rocket", false, {}, true, 10, 0, &single);
+	}
+	CHECK(s.triggered.size() == 3 && !s.game.fireLooping(10));
+	sound::GameSounds::FireInfo automatic;
+	automatic.mode = 2;
+	automatic.burstRounds = 1;
+	s.game.weapon(E::Fire, "cannon", false, {}, true, 11, 0, &automatic);
+	s.game.weapon(E::Fire, "cannon", false, {}, true, 11, 0, &automatic);
+	CHECK(s.triggered.size() == 4 && s.game.fireLooping(11));
+	// Rockets fired while the cannon holds its loop (another state key).
+	s.game.weapon(E::Fire, "rocket", false, {}, true, 12, 0, &single);
+	CHECK(s.triggered.size() == 5 && s.game.fireLooping(11) && !s.game.fireLooping(12));
+	s.game.releaseTrigger(11);
+	CHECK(!s.game.fireLooping(11));
+}

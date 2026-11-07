@@ -11526,7 +11526,7 @@ void GameWorld::fireSeatWeapon(Player& player, Body& body, const SeatLayout& sea
 	}
 	if (shot && w.activeDefense) {
 		raiseShield(body, w, *arm.weapon);
-		weaponSound(WeaponSoundEvent::Fire, player, body.object, w.weapon, body.body.position);
+		weaponSound(WeaponSoundEvent::Fire, player, body.object, w.weapon, body.body.position, arm.weapon->fireMode());
 		return;
 	}
 	if (!shot || !arm.projectile) {
@@ -11625,7 +11625,7 @@ void GameWorld::fireSeatWeapon(Player& player, Body& body, const SeatLayout& sea
 	}
 	++player.roundsFired;
 	++player.gunShots;
-	weaponSound(WeaponSoundEvent::Fire, player, body.object, w.weapon, p.origin);
+	weaponSound(WeaponSoundEvent::Fire, player, body.object, w.weapon, p.origin, arm.weapon->fireMode());
 	// The weapon's event 0 (ObjectEffects), kept short where nothing takes
 	// them (a dedicated server draws no effects).
 	if (std::vector<std::string>& fires = m_objectWeaponFires[body.object]; fires.size() < 8) {
@@ -11833,12 +11833,12 @@ physics::Vec3 GameWorld::seatGunOrigin(const SeatLayout& seat, const SeatWeapon&
 }
 
 void GameWorld::weaponSound(WeaponSoundEvent::Kind kind, const Player& player, uint32_t object,
-	const std::string& weapon, const physics::Vec3& position)
+	const std::string& weapon, const physics::Vec3& position, int fireMode)
 {
 	if (weapon.empty()) {
 		return;
 	}
-	m_weaponSounds.push_back({kind, player.id, object, weapon, position});
+	m_weaponSounds.push_back({kind, player.id, object, weapon, position, fireMode});
 	if (m_weaponSounds.size() > 256) {
 		m_weaponSounds.erase(m_weaponSounds.begin(), m_weaponSounds.end() - 256);
 	}
