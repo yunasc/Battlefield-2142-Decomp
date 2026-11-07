@@ -3205,6 +3205,10 @@ void LevelRenderer::prepareInstances(const Camera& camera, const Mat4& viewProje
 			continue;
 		}
 		bool interior = false;
+		// Projectiles are world-space transient models, like their tracer
+		// and trail effects. The Titan's indoor actor cutoff must not hide
+		// the missile body while leaving its trail visible through openings.
+		// Ordinary frustum/depth tests still apply to these models.
 		if (base.titanInterior || base.titanExterior || titanView.cameraInside) {
 			const Vec3f origin {instance.world.at(3, 0), instance.world.at(3, 1), instance.world.at(3, 2)};
 			const Vec3f d = origin - camera.position;
@@ -3213,7 +3217,7 @@ void LevelRenderer::prepareInstances(const Camera& camera, const Mat4& viewProje
 				? titanSkinnedDraw(titanView, distance, renderer.indoorSkinnedMeshCullDistance)
 				: base.bundled ? titanBundledDraw(titanView, base.titanExterior, distance, renderer.indoorBundledMeshCullDistance)
 							   : titanStaticDraw(titanView, base.titanInterior);
-			if (how == TitanDraw::Skip) {
+			if (how == TitanDraw::Skip && !instance.transient) {
 				continue;
 			}
 			interior = how == TitanDraw::Interior && base.bundled;

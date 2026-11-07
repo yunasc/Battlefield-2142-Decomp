@@ -1406,7 +1406,8 @@ void updateHud(hud::HudManager& hud, const host::HudWorld& world, game::GameWorl
 		}
 		float yaw = 0, pitch = 0;
 		if (known && world.gunTurn(vehicle->id(), me.seat, yaw, pitch)) {
-			hud.set("TurretIconShow", 1);
+			// VehicleHud already applied the authored hasTurretIcon flag.
+			// Having an aim angle must not enable this icon on every vehicle.
 			hud.set("VehicleTurretAngle", yaw);
 		}
 		// The seat's vehicleHud.useChildHud (block +0xb9; the weapon HUD's
@@ -7586,6 +7587,9 @@ int runGame(Options& options, Session& session)
 							step();
 						}
 					}
+				}
+				// Screenshot actions also operate the selected vehicle seat.
+				if (!options.screenshot.empty()) {
 					// --actions: the player's inputs, a tick each unless a count
 					// follows ("fire:30 reload wait:60 item:2 firemode prone:20
 					// crouch:20 jump turn:90 pitch:-10 sprint:30 forward:30"), and
@@ -7601,8 +7605,9 @@ int runGame(Options& options, Session& session)
 						game::SoldierInput act;
 						act.aimPitch = me.aimPitch;
 						bool known = true;
-						if (op == "fire" || op == "wait" || op == "forward" || op == "sprint" || op == "prone" || op == "crouch") {
+						if (op == "fire" || op == "altfire" || op == "wait" || op == "forward" || op == "sprint" || op == "prone" || op == "crouch") {
 							act.fire = op == "fire";
+							act.altFire = op == "altfire";
 							act.throttle = op == "forward" || op == "sprint" ? 1.0f : 0.0f;
 							act.sprint = op == "sprint";
 							act.pose = op == "prone" ? game::SoldierPose::Prone : op == "crouch" ? game::SoldierPose::Crouch

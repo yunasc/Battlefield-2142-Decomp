@@ -8,6 +8,7 @@
 #include "Console/ConsoleBinding.h"
 #include "Game/CombatAreas.h"
 #include "Game/GameWorld.h"
+#include "Geometry/GeometryTemplateManager.h"
 #include "IO/File/FileManager.h"
 #include "Physics/CollisionTemplateManager.h"
 #include "Physics/MaterialManager.h"
@@ -45,7 +46,8 @@ struct TitanLevel {
 	std::function<void()> afterTick;
 	bool loaded = false;
 
-	TitanLevel(const char* gameDir, const std::string& name, int size, bool start = true, const char* mod = nullptr, bool statics = false)
+	TitanLevel(const char* gameDir, const std::string& name, int size, bool start = true, const char* mod = nullptr, bool statics = false,
+		geom::GeometryTemplateManager* geometries = nullptr)
 	{
 		files.setRootPath(gameDir);
 		if (mod) {
@@ -59,11 +61,13 @@ struct TitanLevel {
 		bindMethod(console, "fileManager.mountArchive", ConsoleAccess::Anyone,
 			[this](std::string archive, std::string mountPoint, bool) { files.mountArchive(archive, mountPoint); }, 2);
 		CHECK(console.run("ServerArchives.con", {}, out));
+		if (geometries) CHECK(console.run("ClientArchives.con", {}, out));
 		if (files.exists(level + "ServerArchives.con")) {
 			console.run(level + "ServerArchives.con", {}, out);
 		}
 		files.setMountingAllowed(false);
 		world::registerWorldConsoleMethods(console, templates, objects);
+		if (geometries) geom::registerGeometryConsoleMethods(console, *geometries);
 		templates.setCurrentFileProvider([this] { return console.currentFile(); }); // as main does
 		terrain::registerTerrainConsoleMethods(console, heightmaps, files);
 		physics::registerCollisionConsoleMethods(console, collisionTemplates);

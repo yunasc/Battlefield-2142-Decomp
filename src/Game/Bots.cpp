@@ -854,6 +854,12 @@ std::string BotManager::behaviour(int player) const
 	return it != m_bots.end() ? it->second.behaviour : std::string();
 }
 
+SoldierInput BotManager::lastInputFor(int player) const
+{
+	const auto it = m_bots.find(player);
+	return it != m_bots.end() ? it->second.lastInput : SoldierInput {};
+}
+
 int BotManager::target(int player) const
 {
 	const auto it = m_bots.find(player);
@@ -5894,8 +5900,11 @@ void BotManager::aim(Bot& bot, const GameWorld::PlayerInfo& self, const physics:
 	const float wantPitch = pitchOf(want);
 	const float ey = angleBetween(trueYaw, wantYaw) * kRadians;
 	const float ep = (wantPitch - truePitch) * kRadians;
+	const int aimTarget = hasTarget ? bot.target : -1;
+	const bool aimTargetChanged = gunning && aimTarget != bot.lastAimTarget;
+	bot.lastAimTarget = aimTarget;
 	float wy = 0, wp = 0;
-	if (seconds > 0 && physics::lengthSquared(bot.lastAimPoint) > 0) {
+	if (!aimTargetChanged && seconds > 0 && physics::lengthSquared(bot.lastAimPoint) > 0) {
 		wy = angleBetween(yawOf(bot.lastAimPoint), wantYaw) * kRadians / seconds;
 		wp = (wantPitch - pitchOf(bot.lastAimPoint)) * kRadians / seconds;
 	}
@@ -5913,7 +5922,8 @@ void BotManager::aim(Bot& bot, const GameWorld::PlayerInfo& self, const physics:
 		lead *= 0.5f;
 	}
 	const float bias = average < -1e-4f ? -std::min(0.75f, -20 * average) : 0.0f;
-	float up = bias - g.proportional * ep - g.derivative * (ep - bot.pitchError) + lead;
+	const float pitchErrorDelta = aimTargetChanged ? 0.0f : ep - bot.pitchError;
+	float up = bias - g.proportional * ep - g.derivative * pitchErrorDelta + lead;
 	up = std::clamp(up, -4.0f, 4.0f) * 0.5f;
 	if (up != 0 && std::fabs(up) < 0.01f) {
 		up = up > 0 ? 0.01f : -0.01f;
@@ -5926,7 +5936,9 @@ void BotManager::aim(Bot& bot, const GameWorld::PlayerInfo& self, const physics:
 	if ((ey > 0) == (wy > 0)) {
 		yawLead *= 0.5f;
 	}
-	float right = -gain * ey - g.derivative * (ey - bot.yawError) + yawLead;
+	const float yawErrorDelta = aimTargetChanged ? 0.0f
+		: gunning ? std::remainder(ey - bot.yawError, 2 * 3.14159265f) : ey - bot.yawError;
+	float right = -gain * ey - g.derivative * yawErrorDelta + yawLead;
 	right = std::clamp(right, -limit, limit);
 	if (std::fabs(right) < 0.001f) {
 		right = 0; // the soldier's dead zone (0x0091fdc0)
@@ -5943,6 +5955,23 @@ void BotManager::aim(Bot& bot, const GameWorld::PlayerInfo& self, const physics:
 	const float errorDegrees = ey * kDegrees;
 	if ((errorDegrees >= 0 && turn > errorDegrees) || (errorDegrees < 0 && turn < errorDegrees)) {
 		turn = errorDegrees;
+	}
+	// stepGunner applies this degree delta directly to the seat gun's yaw
+	// (GameWorld.cpp, Body::Gun), bypassing rotationAxisStep. The input adapter
+	// therefore has to enforce the yaw bundle's authored maxSpeed itself;
+	// otherwise a normal ControlInfo output of 2..4 becomes 10..20 degrees in
+	// one 1/30 s tick even on the shipped tank's 25 deg/s turret and walker
+	// gunner's 120 deg/s turret. Mouse/player inputs retain their existing path.
+	if (gunning) {
+		const std::vector<GameWorld::SeatLayout> seats = m_world.vehicleSeats(self.vehicle);
+		if (self.seat >= 0 && static_cast<size_t>(self.seat) < seats.size() && seats[static_cast<size_t>(self.seat)].yawSpeed > 0) {
+			// Bot plans execute round-robin: a degree command may be held for
+			// the physics ticks between decisions, so cap each command to one
+			// 1/30-second simulation step instead of scaling by the elapsed plan
+			// time passed into the controller.
+			const float maxTurn = seats[static_cast<size_t>(self.seat)].yawSpeed / kInputTicksPerSecond;
+			turn = std::clamp(turn, -maxTurn, maxTurn);
+		}
 	}
 	float pitchStep = up * kInputDegreesPerTick * kInputTicksPerSecond * seconds * zoomScale;
 	const float pitchErrorDegrees = ep * kDegrees;
