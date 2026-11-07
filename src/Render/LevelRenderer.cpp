@@ -3983,6 +3983,8 @@ void LevelRenderer::draw(SDL_GPUCommandBuffer* commands, SDL_GPUTexture* color, 
 	// The lighting level's bundled and skinned meshes (QualitySettings).
 	const bool hemiAndShadows = !m_sources || !m_sources->quality || m_sources->quality->meshHemiAndShadows();
 	const GpuMesh* bound = nullptr;
+	bool culling = false;
+	const uint32_t inside = m_sources && m_sources->cockpitVehicle ? m_sources->cockpitVehicle() : 0;
 	const auto drawInstance = [&](const DrawItem& item, MeshQueue queue) {
 		const Instance& instance = *item.instance;
 		bool any = false;
@@ -4003,6 +4005,16 @@ void LevelRenderer::draw(SDL_GPUCommandBuffer* commands, SDL_GPUTexture* color, 
 		}
 		if (!any) {
 			return;
+		}
+		// The occupant's own exterior hull (the gunner's cockpitSubGeom 1):
+		// back faces culled, or the view is inside the hull's far side. Wrecks,
+		// crew kits and dropped kits (also geometry 1) stay two-sided.
+		if (queue == MeshQueue::Opaque) {
+			const bool cull = instance.shownGeometry == 1 && inside != 0 && instance.object == inside;
+			if (cull != culling) {
+				culling = cull;
+				SDL_BindGPUGraphicsPipeline(pass, cull ? m_gpu.meshCulledPipeline() : m_gpu.meshPipeline());
+			}
 		}
 		if (item.mesh != bound) {
 			bound = item.mesh;
@@ -4115,6 +4127,9 @@ void LevelRenderer::draw(SDL_GPUCommandBuffer* commands, SDL_GPUTexture* color, 
 	};
 	for (const DrawItem& item : m_drawList) {
 		drawInstance(item, MeshQueue::Opaque);
+	}
+	if (culling) {
+		SDL_BindGPUGraphicsPipeline(pass, m_gpu.meshPipeline());
 	}
 	// Decals over the opaque surfaces.
 	if (m_decalVertices && !m_decalGroups.empty()) {

@@ -856,3 +856,36 @@ TEST(SoldierControl_ZoomedWalkIsSlowed)
 	CHECK(game::soldierSpeedIndex(SoldierPose::Crouch, false, true) == 1);
 	CHECK(game::soldierSpeed(2) == 1.5f);
 }
+
+TEST(SoldierControl_ViewRelativeDiagonals)
+{
+	for (float throttle : {-1.0f, 1.0f}) {
+		for (float strafe : {-1.0f, 1.0f}) {
+			physics::SoldierBody body;
+			body.position = {0, 1, 0};
+			game::SoldierControl control;
+			game::SoldierInput input;
+			input.throttle = throttle;
+			input.strafe = strafe;
+			for (int tick = 0; tick < 90; ++tick) {
+				control.update(input, body);
+				body.step(1 / 30.0f, slope(0));
+			}
+			CHECK(body.velocity.x * strafe > 2.5f && body.velocity.z * throttle > 2.5f);
+			CHECK(std::sqrt(body.velocity.x * body.velocity.x + body.velocity.z * body.velocity.z) <= 3.91f);
+		}
+	}
+	physics::SoldierBody body;
+	body.position = {0, 1, 0};
+	game::SoldierControl control;
+	game::SoldierInput look;
+	look.turn = 30;
+	control.update(look, body);
+	look = {};
+	look.strafe = 1;
+	for (int tick = 0; tick < 90; ++tick) {
+		control.update(look, body);
+		body.step(1 / 30.0f, slope(0));
+	}
+	CHECK(body.velocity.x > 3 && body.velocity.z < -1.8f);
+}

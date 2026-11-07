@@ -100,6 +100,8 @@ public:
 		bool held = false;
 		float heldValue = 1;
 		int roundsPerMinute = 600;
+		// Local hand weapons are driven by accepted simulation shots.
+		bool synchronizeShots = false;
 	};
 	// `user` keys the weapon's sound component (who holds it), `object`
 	// the root its 3D sounds belong to. `reloadState` is the ammo
@@ -138,6 +140,7 @@ private:
 		int skip = 0;
 		int reloadPart = 0;
 		bool looping = false;
+		int loopSlot = -1;
 		bool burst = false;
 		int lastTick = 0;
 	};

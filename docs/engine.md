@@ -9732,13 +9732,14 @@ active node to):
   its children sit `distance` pixels along the angle (radians, 0 right,
   pi/2 down) times what is left of the fade. `addNodeBlendEffect <src>
   <dest>` (`0x007b20c0`, a `<node>BlendEffect` render-state node) gives
-  the quads below it those Direct3D 9 blend factors (the vehicle HUDs'
-  `7 2`: `D3DBLEND_DESTALPHA`, `D3DBLEND_ONE`; the render-state node
-  hands each quad below it through, `0x00870c40`); `HudQuad::blend`
-  carries them to the renderer, which draws those quads with a UI
-  pipeline of the same factors (`GpuContext::uiBlendPipeline`, made the
-  first time a pair is used; the target's alpha is 1 after the
-  post-production, so `7 2` adds the glass over the view). `setNodeTimesBlink <n> <mode>` and
+  the quads below it Meme blend-function values. These are translated
+  in `Render/HudBlend.h` before selecting SDL factors. In particular the
+  default effect factory (`0x007e4360`) constructs `7 8`, the ordinary
+  source-alpha/inverse-source-alpha pair; vehicle HUDs use `7 2` for
+  source-alpha/ONE additive strokes. Treating 7 as raw D3DBLEND_DESTALPHA
+  exposed the transparent-white backgrounds of the vehicle HUD textures
+  as opaque blocks. `HudQuad::blend` carries the Meme pair to
+  `GpuContext::uiBlendPipeline`, cached on first use. `setNodeTimesBlink <n> <mode>` and
   `setNodeIntervalBlink <s>` (`0x007b1c00`, `0x007b1da0`: the blink
   effect's slots `0xdc`, `0xd8`): once shown, the node is off every other
   interval for its first n blinks.
