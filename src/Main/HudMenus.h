@@ -481,4 +481,13 @@ struct ScoreboardLine {
 };
 std::vector<ScoreboardLine> scoreboardBySquad(const std::vector<ScoreboardMember>& members);
 
+// The capture bar's variables for a soldier at `at`: the closest capturable
+// control point whose radius holds him (the scripts' getOccupyingCP), and
+// the flag's height as the bar value.
+struct CaptureBar {
+	bool enabled = false, neutralShow = false, takenShow = false;
+	float value = 0;
+};
+CaptureBar captureBar(const std::vector<game::GameWorld::ControlPointInfo>& points, const physics::Vec3& at);
+
 } // namespace dice::hfe::menu

@@ -659,6 +659,52 @@ TEST(Hud_CommanderMiniMapTab)
 	CHECK(!manager.miniMapWorldAt(100, 300, x, z));
 }
 
+TEST(Hud_DeploymentMarkerLabelsAreReadableAndClickable)
+{
+	const std::string font = "header\r\n2\r\ntest\r\n128\r\n64\r\n13.000000\r\nglyphs\r\n1\r\n"
+		"65\t0.125000\t4.250000\t0.025000\t2\t44\t16\t49\t25\r\nkerning\r\n0\r\n";
+	hud::HudManager manager([&font](const std::string& path, std::string& text) {
+		if (path.find("hudfontlocalbold_9.dif") == std::string::npos) {
+			return false;
+		}
+		text = font;
+		return true;
+	});
+	Console console;
+	hud::registerHudConsoleMethods(console, manager);
+	std::string out;
+	for (const char* line : {"hudBuilder.createMapNode Global Map", "hudBuilder.setMaxiPos -256/-256",
+			 "hudBuilder.setMaxiSize 512/512"}) {
+		console.execute(line, out);
+	}
+	manager.setMap("map.dds", 0, 0, 512, 512);
+	manager.set("MapFullSize", 1);
+	manager.set("SpawnShow", 1);
+	hud::HudManager::MapMarker spawn {"spawn.dds", 256, 256, 32};
+	spawn.id = 3;
+	spawn.label = "A";
+	manager.setMapMarkers({spawn});
+	const auto quads = manager.frame(0);
+	CHECK(std::any_of(quads.begin(), quads.end(), [](const hud::HudQuad& q) {
+		return q.texture.find("/hudfontlocalbold_9.dds") != std::string::npos;
+	}));
+	CHECK(manager.mapMarkerAt(420, 300) == 3);
+	auto second = spawn;
+	second.id = 4;
+	manager.setMapMarkers({spawn, second});
+	manager.frame(0);
+	CHECK(manager.mapMarkerAt(420, 300) == 3);
+	CHECK(manager.mapMarkerAt(420, 315) == 4);
+	// A long fallback/localized name must not paint over the kit panel.
+	spawn.label = std::string(400, 'A');
+	manager.setMapMarkers({spawn});
+	for (const auto& q : manager.frame(0)) {
+		if (q.texture.find("/hudfontlocalbold_9.dds") != std::string::npos) {
+			CHECK(q.x0 >= 144 && q.x1 <= 656 && q.y0 >= 44 && q.y1 <= 556);
+		}
+	}
+}
+
 // Non-English text (coverage-7 P8; BF2142.exe 0x00405360): the strings in
 // the game's language and its own fonts (Fonts/<language>/), whose glyphs
 // are by Unicode code point; HUD text is read as UTF-8 (hud::nextCode), so
@@ -724,4 +770,38 @@ TEST(Hud_NonEnglishTextHasGlyphs)
 		CHECK(checked > 20 && missing == 0);
 	}
 	hud::setLanguage("English");
+}
+
+// The capture bar and the capture voice (HudMenus.h captureBar, GameWorld.h captureVoice).
+#include "Main/HudMenus.h"
+
+TEST(CaptureBar_ShowsTheFlagMovingInTheClosestPointsRadius)
+{
+	using Info = dice::hfe::game::GameWorld::ControlPointInfo;
+	Info neutral {1, 0, {0, 0, 0}, 10};
+	neutral.flagHeight = 0.4f;
+	neutral.flagRate = 0.05f;
+	Info owned {2, 1, {100, 0, 0}, 10};
+	owned.flagHeight = 0.7f;
+	owned.flagRate = -0.05f;
+	auto bar = dice::hfe::menu::captureBar({neutral, owned}, {3, 0, 0});
+	CHECK(bar.enabled && bar.takenShow && !bar.neutralShow);
+	CHECK(std::fabs(bar.value - 0.4f) < 1e-5f);
+	bar = dice::hfe::menu::captureBar({neutral, owned}, {101, 0, 0});
+	CHECK(bar.enabled && bar.neutralShow && !bar.takenShow);
+	CHECK(std::fabs(bar.value - 0.7f) < 1e-5f);
+	CHECK(!dice::hfe::menu::captureBar({neutral, owned}, {50, 0, 0}).enabled);
+	owned.capturable = false;
+	CHECK(!dice::hfe::menu::captureBar({owned}, {100, 0, 0}).enabled);
+}
+
+TEST(CaptureVoice_IsTeamRelativeAndSiloAware)
+{
+	using dice::hfe::game::captureVoice;
+	CHECK(captureVoice(0, 1, 1, 0) == "AUTO_RULES_wecapturedacp");
+	CHECK(captureVoice(1, 2, 1, 0) == "AUTO_RULES_welostacp");
+	CHECK(captureVoice(1, 0, 2, 0).empty());
+	CHECK(captureVoice(0, 2, 1, 3) == "AUTO_TITAN_C_enemycapturedsilo_3");
+	CHECK(captureVoice(0, 1, 1, 3) == "AUTO_TITAN_C_friendlycapturedsilo_3");
+	CHECK(captureVoice(1, 2, 1, 5) == "AUTO_TITAN_C_friendlylostsilo_5");
 }

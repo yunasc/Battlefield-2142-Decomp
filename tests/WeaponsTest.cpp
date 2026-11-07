@@ -14,6 +14,21 @@
 
 using namespace dice::hfe;
 
+TEST(Weapons_FirePulseIncludesUnlimitedAmmoAndRejectsCooldown)
+{
+	game::FireArmSettings settings;
+	settings.magSize = -1;
+	settings.roundsPerMinute = 600;
+	game::FireArm gun(settings);
+	CHECK(!gun.firedThisTick());
+	CHECK(gun.tick(1 / 30.0f, true));
+	CHECK(gun.firedThisTick() && gun.roundsInMag() == -1);
+	CHECK(!gun.tick(1 / 30.0f, true) && !gun.firedThisTick());
+	CHECK(!gun.tick(1 / 30.0f, true) && !gun.firedThisTick());
+	CHECK(gun.tick(1 / 30.0f, true) && gun.firedThisTick());
+	CHECK(!gun.tick(1 / 30.0f, false) && !gun.firedThisTick());
+}
+
 TEST(Weapons_DamageFallsOffWithDistance)
 {
 	game::ProjectileSettings rifle; // eu_ar_rifleProjectile

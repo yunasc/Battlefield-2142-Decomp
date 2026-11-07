@@ -757,6 +757,7 @@ bool FireArm::tick(float seconds, bool trigger, bool altTrigger)
 	if (fired && m_settings.thrown) {
 		m_hidden = true; // the launch (0x005e5720) puts the firearm away
 	}
+	m_firedThisTick = fired;
 	return fired;
 }
 

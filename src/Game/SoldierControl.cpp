@@ -159,8 +159,9 @@ void SoldierControl::update(const SoldierInput& input, physics::SoldierBody& bod
 		bodyTurn += step;
 	}
 	body.yawDegrees += bodyTurn;
-	// Heading (+z forward when yaw is 0, +x to the right).
-	const float yaw = body.yawDegrees * 3.14159265f / 180.0f;
+	// Movement follows the view, including head twist, so W/S and A/D
+	// stay independent and diagonal strafing follows the crosshair.
+	const float yaw = (body.yawDegrees + m_twist) * 3.14159265f / 180.0f;
 	const physics::Vec3 forward {std::sin(yaw), 0, std::cos(yaw)};
 	const physics::Vec3 right {std::cos(yaw), 0, -std::sin(yaw)};
 	const float speed = soldierSpeed(soldierSpeedIndex(input.pose, sprinting, m_zoomed)); // +0x310 (0x00586020)
