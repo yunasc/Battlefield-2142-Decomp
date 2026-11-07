@@ -17,6 +17,7 @@
 #include "Physics/CollisionTemplateManager.h"
 #include "Physics/MaterialManager.h"
 #include "Main/HudWorld.h"
+#include "Main/PlayerCamera.h"
 #include "Render/PostProduction.h"
 #include "TestMain.h"
 #include "World/Object.h"
@@ -52,10 +53,11 @@ struct Garage {
 	std::unique_ptr<game::GameWorld> world;
 	bool loaded = false;
 
-	explicit Garage(const char* gameDir)
+	explicit Garage(const char* gameDir, const char* modPath = "mods/bf2142")
 	{
 		files.setRootPath(gameDir);
-		files.addSearchPath("mods/bf2142");
+		files.addSearchPath(modPath);
+		if (std::string(modPath) != "mods/bf2142") files.addSearchPath("mods/bf2142");
 		files.setMountingAllowed(true);
 		bindMethod(console, "fileManager.mountArchive", ConsoleAccess::Anyone,
 			[this](std::string archive, std::string mountPoint, bool) { files.mountArchive(archive, mountPoint); }, 2);
@@ -2178,4 +2180,103 @@ TEST(Vehicles_StaticGunnerSitsOnTheCockpit)
 	const float after = g.yaw(me.soldier);
 	std::fprintf(stderr, "  static_av: gun yaw %.1f, gunner %.1f -> %.1f\n", yaw, before, after);
 	CHECK(std::fabs(yaw) > 5 && std::fabs(std::remainder(after - before - yaw, 360.0f)) < 1);
+}
+
+TEST(PlayerCamera_ReloadAndWalkerWithGameAssets)
+{
+	if (!gameDir()) return;
+	Garage g(gameDir());
+	if (!g.loaded) return;
+	g.files.setMountingAllowed(true);
+	std::string out;
+	g.console.run("ClientArchives.con", {}, out);
+	g.files.setMountingAllowed(false);
+	anim::AnimationSystems systems([&](const std::string& path, std::vector<uint8_t>& bytes) { return g.files.readFile(path, bytes); });
+	anim::registerAnimationConsoleMethods(g.console, systems);
+	g.console.run("Objects/Soldiers/Common/Animations/ValueHolders.inc", {}, out);
+	const auto load = [&](const std::string& path) { return systems.get(path, [&] { g.console.run(path, {}, out); }); };
+	const uint32_t walker = g.start("as_heavy_mech", {0, 4, 30});
+	g.world->setAnimationSystems(&systems, load);
+	CHECK(g.world->spawnPlayer(2));
+	PlayerCamera camera(*g.world, systems, load);
+	const auto step = [&](game::SoldierInput input = {}) {
+		g.world->setPlayerInput(input);
+		g.world->tick(1 / 30.0f);
+		camera.tick(1 / 30.0f);
+	};
+	for (int i = 0; i < 90; ++i) step();
+	camera.setAltFire(true);
+	step();
+	camera.setAltFire(false);
+	for (int i = 0; i < 30; ++i) step();
+	CHECK(camera.zoomLevel() > 0);
+	game::SoldierInput fire;
+	fire.fire = true;
+	for (int i = 0; i < 10; ++i) step(fire);
+	game::SoldierInput reload;
+	reload.reload = true;
+	step(reload);
+	CHECK(g.world->playerWeapon()->reloading());
+	CHECK(camera.zoomLevel() == 0);
+	for (int i = 0; i < 15; ++i) step();
+	const auto playing = camera.playing();
+	CHECK(std::find(playing.begin(), playing.end(), "reload") != playing.end());
+	for (int i = 0; i < 150; ++i) step();
+	CHECK(!g.world->playerWeapon()->reloading());
+	const auto finished = camera.playing();
+	CHECK(std::find(finished.begin(), finished.end(), "reload") == finished.end());
+	CHECK(g.enter(walker));
+	for (int i = 0; i < 90; ++i) step();
+	PlayerCamera::View inside;
+	CHECK(camera.view(inside, 16.0f / 9.0f));
+	PlayerCamera::Cockpit cockpit;
+	CHECK(camera.cockpit(cockpit) && cockpit.vehicle == walker && cockpit.subGeometry == 0);
+	CHECK(inside.position[1] > g.objects.find(walker)->position().y);
+	camera.toggleMode();
+	CHECK(!camera.insideView() && camera.mode() != game::camera::Mode::Inside);
+	CHECK(camera.selectView(1));
+	CHECK(camera.insideView());
+}
+
+TEST(PlayerCamera_TankZoomRetainsShortClicks)
+{
+	if (!gameDir()) return;
+	for (const char* mod : {"mods/bf2142", "mods/Project_Remaster_v17_Final"}) {
+		if (!std::ifstream(std::string(gameDir()) + "/" + mod + "/ServerArchives.con")) continue;
+		for (const char* name : {"eu_tank", "as_tank"}) {
+			Garage g(gameDir(), mod);
+			if (!g.loaded) return;
+			const auto tank = g.start(name, {0, 2, 6});
+			CHECK(g.enter(tank));
+			anim::AnimationSystems systems(nullptr);
+			PlayerCamera camera(*g.world, systems, nullptr);
+			const auto step = [&] {
+				g.world->setPlayerInput({});
+				g.world->tick(1 / 30.0f);
+				camera.tick(1 / 30.0f);
+			};
+			for (int i = 0; i < 60; ++i) step();
+			const float wide = camera.fieldOfView();
+			camera.setAltFire(true);
+			step();
+			camera.setAltFire(false);
+			for (int i = 0; i < 30; ++i) step();
+			const float zoomed = camera.fieldOfView();
+			std::fprintf(stderr, "  %s %s zoom level %d: fov %.4f -> %.4f\n", mod, name, camera.seatZoomLevel(), wide, zoomed);
+			CHECK(camera.seatZoomLevel() == 1);
+			CHECK(zoomed < wide * 0.75f);
+			camera.setAltFire(true);
+			step();
+			camera.setAltFire(false);
+			for (int i = 0; i < 30; ++i) step();
+			CHECK(camera.seatZoomLevel() == 0);
+			CHECK(near(camera.fieldOfView(), wide));
+			// A mouse press/release can occur between 30 Hz camera ticks.
+			camera.setAltFire(true);
+			camera.setAltFire(false);
+			for (int i = 0; i < 30; ++i) step();
+			CHECK(camera.seatZoomLevel() == 1);
+			CHECK(camera.fieldOfView() < wide * 0.75f);
+		}
+	}
 }

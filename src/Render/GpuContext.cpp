@@ -1,4 +1,5 @@
 #include "GpuContext.h"
+#include "HudBlend.h"
 
 #include "EmbeddedShaders.h"
 
@@ -377,10 +378,10 @@ bool GpuContext::createPipelines(std::string& error)
 
 namespace {
 
-// Direct3D 9's D3DBLEND (d3d9types.h) as SDL's factors.
+// Translate the HUD's Meme enum before using Direct3D's factor numbers.
 bool blendFactor(int d3dBlend, SDL_GPUBlendFactor& factor)
 {
-	switch (d3dBlend) {
+	switch (hudBlendToD3D(d3dBlend)) {
 	case 1: factor = SDL_GPU_BLENDFACTOR_ZERO; return true;
 	case 2: factor = SDL_GPU_BLENDFACTOR_ONE; return true;
 	case 3: factor = SDL_GPU_BLENDFACTOR_SRC_COLOR; return true;

@@ -83,6 +83,10 @@ physics::Vec3 ragDollHitForce(physics::Vec3 direction, float hitUp, float hitFor
 // the round starts as the round's starting teams.
 enum class RoundState { BeforeStart = 3, Playing = 1 };
 
+// The voice line the local player hears when a control point changes hands
+// ("" for none); siloIndex 1..5 selects Titan mode's silo variants.
+std::string captureVoice(int oldTeam, int newTeam, int localTeam, int siloIndex);
+
 // An ObjectSpawner template's settings (ObjectSpawner template 0x2c0-0x304,
 // defaults from its constructor 0x005af920).
 struct SpawnerSettings {
@@ -440,6 +444,7 @@ public:
 		uint32_t object = 0;
 		std::string weapon; // the weapon's template
 		physics::Vec3 position;
+		int fireMode = -1; // a seat gun's fire component mode (0 single, 1 burst, 2 automatic); -1 unknown
 	};
 	std::vector<WeaponSoundEvent> takeWeaponSounds() { return std::exchange(m_weaponSounds, {}); }
 
@@ -469,11 +474,14 @@ public:
 	uint32_t playerKitObject() const { return m_player && m_player->alive ? m_player->kitObject : 0; }
 	int playerTeam() const { return m_player ? m_player->team : 0; }
 
-	// Players: the local one joins with spawnPlayer, others with addPlayer
+	// Players: the local one joins with joinPlayer, others with addPlayer
 	// (bots, remote players); ids count up from 0. A player's soldier dies when its
 	// armor runs out (PlayerKilled, PlayerDeath for the scripts) and
 	// respawns after the spawn time.
 	int addPlayer(const std::string& name, int team, bool ai);
+	// Add the local player to a team without creating a soldier. The spawn
+	// screen uses this state before the player's first deployment.
+	int joinPlayer(int team);
 	// Moves a player to the other team (a joined client's PostRemote 6/7,
 	// which the game server hands the game logic's slot 0x60, 0x004b0690):
 	// only while it has no soldier (the spawn screen's team buttons); it
@@ -696,6 +704,9 @@ public:
 	bool segmentHit(const physics::Vec3& from, const physics::Vec3& to, uint32_t ignore, float& fraction,
 		uint32_t& object) const;
 	void setInput(int player, const SoldierInput& input);
+	// GeneralSettings.AutoReload: the local player's empty weapon requests
+	// a normal reload when a spare magazine is available.
+	void setAutoReload(bool enabled) { m_autoReload = enabled; }
 	// The pitch (degrees, up positive) the weapon's recoil has kicked the
 	// player's aim by since the last call: the original adds the kick to the
 	// soldier's own angles (0x0058a6d0), so a viewer sending absolute pitches
@@ -763,6 +774,13 @@ public:
 		// by the minimap, the map and the spawn screen (0x00780410,
 		// 0x00789b50, 0x0078bd00 ...).
 		bool showOnMinimap = true;
+		// The control point's object template name, used as a readable label
+		// beside its deployment-map spawn marker.
+		std::string name;
+		// The flag script's state, for the capture bar: height 0 (bottom)..1
+		// (top) and its change per second (takeOverChangePerSecond).
+		float flagHeight = 0;
+		float flagRate = 0;
 	};
 	std::vector<ControlPointInfo> controlPointList() const;
 	// The control points of a supply group (host.sgl_getControlPointsInGroup,
@@ -797,6 +815,11 @@ public:
 	static constexpr int kSpawnInVehicle = -4;
 	void setSpawnVehicle(int player, uint32_t vehicle);
 	std::vector<uint32_t> spawnVehicles(int team) const;
+	// A Titan's own moving interior spawn points; selecting the Titan bypasses
+	// the rest of its (potentially mixed) control-point group. An unavailable,
+	// destroyed, enemy, or non-Titan-mode choice cannot fall back to ground.
+	static constexpr int kSpawnOnTitan = -5;
+	void setSpawnTitan(int player, uint32_t titan);
 	// The projectile camera: a seat's weapon with ToggleCameraComp's
 	// zoom.useProjectileCamera (as_ag's and us_ag's guided missile seats, the
 	// hover bike's) firing a round whose template has useProjectileCamera
@@ -934,6 +957,7 @@ public:
 	// The kit (and its soldier template) for the player's next spawn.
 	void setKit(int player, const std::string& kit, const std::string& soldier);
 	int spawnChoice(int player) const;
+	uint32_t spawnTitan(int player) const;
 	// The control points a team may spawn at (held, with spawn points).
 	std::vector<int> spawnablePoints(int team) const;
 	// Seconds from death to the next spawn (sv.spawnTime, 15 by default).
@@ -2665,6 +2689,11 @@ private:
 			return body ? body->body.pointVelocity(point) : physics::Vec3 {};
 		}
 	};
+	// A team's PlayerControlObject passes the other's force fields and doors.
+	static bool teamPasses(const MeshActor& pco, const MeshActor& other)
+	{
+		return (pco.team == 1 && (other.collisionGroups & 0x100)) || (pco.team == 2 && (other.collisionGroups & 0x200));
+	}
 	MeshActor actorOf(Body& body) const;
 	MeshActor actorOf(const StaticPart& part) const;
 	// B as A asks for it (otherCollisionLod): its faces, box and radius at
@@ -2680,8 +2709,10 @@ private:
 	void wheelProbes(Body& body, MeshActor& b, float seconds);
 	// A walker's legs' sphere against B (the MechLegs response's slot 0x24).
 	void legsSphere(Body& walker, MeshActor& a, MeshActor& b);
+	// A segment against the statics' and the other bodies' vehicle LOD meshes.
+	bool segmentHitsObjects(const physics::Vec3& from, const physics::Vec3& to, uint32_t self);
 	physics::MassShares addMeshContact(MeshActor& a, MeshActor& b, const physics::Vec3& point, const physics::Vec3& normal, float depth,
-		uint32_t materialA, uint32_t materialB, bool trunkPass, bool toA = true);
+		uint32_t materialA, uint32_t materialB, bool trunkPass, bool toA = true, bool legs = false);
 	std::vector<uint32_t> materialMap(const world::ObjectTemplate& objectTemplate) const;
 	void buildStaticCollision();
 	void addStaticCollision(const world::ObjectTemplate& objectTemplate, const physics::Mat3& rotation,
@@ -2717,6 +2748,7 @@ private:
 		std::vector<HitBone> hitBones;
 		int spawnChoice = -1;
 		uint32_t spawnVehicle = 0; // spawnChoice kSpawnInVehicle: the vehicle
+		uint32_t spawnTitan = 0; // spawnChoice kSpawnOnTitan: the Titan object
 		int squad = 0;
 		bool squadLeader = false;
 		std::string kitTemplate, soldierTemplate; // the next spawn's kit (empty: the team's assault kit)
@@ -2769,6 +2801,7 @@ private:
 		int seatItemSelect = 0;     // a seat weapon taken by its key, for the item selection (takeSeatItemSelect)
 		int squadSizeRefused = 0;   // a key whose weapon the squad is too small for (takeSquadSizeRefused)
 		bool reloadWas = false;     // c_PIReload last tick
+		bool animationReloadWas = false;
 		uint32_t reloadPresses = 0; // its presses (PlayerInfo::reloadPresses)
 		GunSway sway;
 		std::string feelFor;
@@ -3129,6 +3162,7 @@ private:
 	Player* downedPlayer(uint32_t object) const;
 	void shockDowned(Player& victim, const ProjectileSettings& shock, float amount, uint32_t surfaceMaterial, int attacker);
 	float m_manDownTime = 15;
+	bool m_autoReload = false; // GeneralSettings.AutoReload for the local player
 	std::map<std::pair<int, int>, uint32_t> m_beacons; // (team, squad) -> beacon object
 	// The beacon's pod (the thrower's ThrownSpawnPointComp, class 0x94f3:
 	// spawn.spawnInPod +0xe0 and spawn.spawnVehicle +0xc4, handed by the
@@ -3303,7 +3337,7 @@ private:
 	std::vector<SoundEvent> m_sounds;
 	std::vector<WeaponSoundEvent> m_weaponSounds;
 	void weaponSound(WeaponSoundEvent::Kind kind, const Player& player, uint32_t object, const std::string& weapon,
-		const physics::Vec3& position);
+		const physics::Vec3& position, int fireMode = -1);
 	void stepSeatCorpses(float seconds);
 	// Bodies after PlayerDeath, with their ragdolls (the soldier's armour
 	// stays a wreck until its countdown, 0x00652380, removes the object).
@@ -3350,6 +3384,7 @@ private:
 		float reloadLeft = 0;
 		int presses = -1;
 		bool wasFiring = false;
+		bool animationReloadWas = false;
 		int burstLeft = 0;
 		int tracerCount = 0;       // the fire comp's +0x78 (FireArm::takeTracer)
 		std::vector<HitBone> hitBones; // the soldier template's skeletonCollisionBone records

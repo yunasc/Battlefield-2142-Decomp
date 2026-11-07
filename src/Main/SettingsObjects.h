@@ -89,6 +89,7 @@ public:
 	// Writes them all (LocalProfile.save writes Profile.con alone).
 	bool save() const;
 	bool saveProfile() const;
+	bool saveGeneral() const; // General.con alone (a help key played)
 	bool saveUserSettings() const;
 
 	// Told after a console line changed a value (its key).
