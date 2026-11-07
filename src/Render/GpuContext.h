@@ -229,6 +229,7 @@ public:
 	SDL_GPUDevice* device() const { return m_device; }
 	SDL_Window* window() const { return m_window; }
 	SDL_GPUGraphicsPipeline* meshPipeline() const { return m_meshPipeline; }
+	SDL_GPUGraphicsPipeline* meshCulledPipeline() const { return m_meshCulledPipeline; } // back faces culled
 	SDL_GPUGraphicsPipeline* terrainPipeline() const { return m_terrainPipeline; }
 	// The surrounding terrain (secondary heightmaps): terrain.vert with
 	// surrounding.frag.
@@ -349,6 +350,7 @@ private:
 	SDL_Window* m_window = nullptr;
 	SDL_GPUTextureFormat m_colorFormat = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
 	SDL_GPUGraphicsPipeline* m_meshPipeline = nullptr;
+	SDL_GPUGraphicsPipeline* m_meshCulledPipeline = nullptr;
 	SDL_GPUGraphicsPipeline* m_terrainPipeline = nullptr;
 	SDL_GPUGraphicsPipeline* m_surroundingPipeline = nullptr;
 	SDL_GPUGraphicsPipeline* m_skyPipeline = nullptr;

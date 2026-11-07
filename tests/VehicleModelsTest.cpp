@@ -2423,3 +2423,50 @@ TEST(Vehicles_GunshipPilotGunFiresPerPressAndReloads)
 		}
 	}
 }
+
+// The gunships' gunner (as_ag / us_ag seat 2, vanilla and Remaster): the
+// seat camera hangs under the turret bundles, so the view turns with the
+// mouse and follows the gun's yaw and pitch; and it draws geometry 1 of
+// the mesh (cockpitSubGeom 1, the whole exterior hull, seen from inside:
+// the renderer culls its back faces), where the pilot's is geometry 0.
+TEST(PlayerCamera_GunshipGunnerTurnsWithTheGun)
+{
+	if (!gameDir()) return;
+	constexpr float kDeg = 3.14159265f / 180;
+	for (const char* mod : {"mods/bf2142", "mods/Project_Remaster_v17_Final"}) {
+		if (!std::ifstream(std::string(gameDir()) + "/" + mod + "/ServerArchives.con")) continue;
+		for (const char* name : {"as_ag", "us_ag"}) {
+			Garage g(gameDir(), mod);
+			if (!g.loaded || !g.templates.find(name)) continue;
+			const auto ship = g.start(name, {0, 2, 6});
+			CHECK(g.enter(ship));
+			anim::AnimationSystems systems(nullptr);
+			PlayerCamera camera(*g.world, systems, nullptr);
+			PlayerCamera::Cockpit cockpit;
+			camera.tick(1 / 30.0f);
+			CHECK(camera.cockpit(cockpit) && cockpit.subGeometry == 0);
+			game::SoldierInput sw;
+			sw.switchSeat = 2;
+			g.world->setPlayerInput(sw);
+			g.world->tick(1 / 30.0f);
+			for (int i = 0; i < 20; ++i) { g.world->setPlayerInput({}); g.world->tick(1 / 30.0f); camera.tick(1 / 30.0f); }
+			CHECK(camera.cockpit(cockpit) && cockpit.vehicle == ship && cockpit.subGeometry == 1);
+			PlayerCamera::View rest, turned;
+			CHECK(camera.view(rest, 16.0f / 9.0f));
+			float gunYaw = 0, gunPitch = 0;
+			game::SoldierInput look;
+			look.turn = 20;
+			look.aimPitch = 25;
+			for (int i = 0; i < 15; ++i) { g.world->setPlayerInput(look); g.world->tick(1 / 30.0f); camera.tick(1 / 30.0f); look.turn = 0; }
+			CHECK(camera.view(turned, 16.0f / 9.0f));
+			game::GameWorld::PlayerInfo me;
+			g.world->playerInfo(g.world->localPlayer(), me);
+			CHECK(g.world->gunAim(ship, me.seat, gunYaw, gunPitch));
+			std::fprintf(stderr, "  %s %s gunner: gun %.1f/%.1f, view yaw %.1f -> %.1f, pitch %.1f -> %.1f\n", mod, name, gunYaw, gunPitch,
+				rest.yaw / kDeg, turned.yaw / kDeg, rest.pitch / kDeg, turned.pitch / kDeg);
+			CHECK(std::fabs(gunYaw - 20) < 1 && gunPitch > 10);
+			CHECK(std::fabs((turned.yaw - rest.yaw) / kDeg - gunYaw) < 1);
+			CHECK(std::fabs((turned.pitch - rest.pitch) / kDeg - gunPitch) < 1);
+		}
+	}
+}

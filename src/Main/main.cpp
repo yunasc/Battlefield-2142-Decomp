@@ -7438,12 +7438,14 @@ int runGame(Options& options, Session& session)
 								step();
 							}
 						};
+						if (options.seat == 0) { // --seat: stay parked (an aircraft would fly off and crash)
 						drive(1, 0, 90);
 						report("after 3 s of throttle");
 						drive(-1, 0, 30);
 						report("after 1 s braking");
 						drive(0.5f, 1, 45);
 						report("after 1.5 s turning right");
+						}
 						if (options.seat > 0) {
 							// --seat N: stay aboard in that seat for the screenshot.
 							game::SoldierInput seat;
