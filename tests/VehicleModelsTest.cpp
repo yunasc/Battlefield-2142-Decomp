@@ -17,6 +17,8 @@
 #include "Physics/CollisionTemplateManager.h"
 #include "Physics/MaterialManager.h"
 #include "Main/HudWorld.h"
+#include "Main/PlayerCamera.h"
+#include "Net/RemoteInput.h"
 #include "Render/PostProduction.h"
 #include "TestMain.h"
 #include "World/Object.h"
@@ -25,6 +27,7 @@
 #include "World/WorldConsole.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -52,10 +55,11 @@ struct Garage {
 	std::unique_ptr<game::GameWorld> world;
 	bool loaded = false;
 
-	explicit Garage(const char* gameDir)
+	explicit Garage(const char* gameDir, const char* modPath = "mods/bf2142")
 	{
 		files.setRootPath(gameDir);
-		files.addSearchPath("mods/bf2142");
+		files.addSearchPath(modPath);
+		if (std::string(modPath) != "mods/bf2142") files.addSearchPath("mods/bf2142");
 		files.setMountingAllowed(true);
 		bindMethod(console, "fileManager.mountArchive", ConsoleAccess::Anyone,
 			[this](std::string archive, std::string mountPoint, bool) { files.mountArchive(archive, mountPoint); }, 2);
@@ -566,6 +570,91 @@ TEST(Vehicles_GunshipFlies)
 	std::fprintf(stderr, "  as_ag: %.1f m up, %.1f m ahead after 5 s\n", p.y - rest.y, p.z - rest.z);
 	CHECK(p.y - rest.y > 5);
 	CHECK(p.z - rest.z > 10);
+}
+
+// A gunship's pilot pitches up and down at comparable rates (the report:
+// "can pitch down, can't pitch up"): from a hover, held pitch keys and a
+// sustained mouse stream each way.
+TEST(Vehicles_GunshipPitchesBothWays)
+{
+	if (!gameDir()) {
+		return;
+	}
+	for (const char* mod : {"mods/bf2142", "mods/Project_Remaster_v17_Final"}) {
+		for (const char* name : {"as_ag", "us_ag"}) {
+			for (int mode = 0; mode < 4; ++mode) {
+				Garage g(gameDir(), mod);
+				if (!g.loaded || !g.templates.find(name)) {
+					continue;
+				}
+				const uint32_t ag = g.start(name, {0, 3, 8});
+				if (!g.enter(ag)) {
+					continue;
+				}
+				game::SoldierInput lift;
+				lift.throttle = 1;
+				g.drive(lift, 4);
+				g.drive({}, 3);
+				// mode 0/1: ArrowDown (-1, nose up) / ArrowUp (+1); 2/3: mouse up / down.
+				const float dir = mode % 2 == 0 ? 1.0f : -1.0f; // +1 = nose up
+				float aim = 0;
+				float peak = 0, peakRate = 0;
+				const auto pitchOf = [&] {
+					for (const auto& info : g.world->vehicleList()) {
+						if (info.object == ag) {
+							return std::pair<float, float> {std::asin(std::clamp(info.forward.y, -1.0f, 1.0f)) * 57.29578f,
+								info.angularVelocity.x * info.right.x + info.angularVelocity.y * info.right.y + info.angularVelocity.z * info.right.z};
+						}
+					}
+					return std::pair<float, float> {};
+				};
+				const float start = pitchOf().first;
+				for (int i = 0; i < 60; ++i) {
+					game::SoldierInput in;
+					if (mode < 2) {
+						in.pitchAxis = -dir;
+					} else {
+						aim += dir * 4.0f; // degrees a tick, up positive
+						in.aimPitch = aim;
+					}
+					g.world->setPlayerInput(in);
+					g.world->tick(1 / 30.0f);
+					const auto [angle, rate] = pitchOf();
+					if (std::fabs(angle - start) > std::fabs(peak)) peak = angle - start;
+					peakRate = std::max(peakRate, std::fabs(rate));
+					if (i % 10 == 9) {
+						std::fprintf(stderr, "    %s %s mode %d t=%.1f pitch %.2f rate %.3f\n", mod, name, mode, (i + 1) / 30.0f, angle - start, rate);
+					}
+				}
+				std::fprintf(stderr, "  %s %s mode %d: peak %.2f deg, peak rate %.3f rad/s\n", mod, name, mode, peak, peakRate);
+				CHECK(peak * dir > 3);
+			}
+		}
+	}
+}
+
+// The remote path (client -> PlayerMove -> server/prediction): a driver's
+// PIPitch is the mouse's change, so a pilot who keeps pulling the mouse up
+// (the hull fights back) must not run out of pitch input. The server's
+// clamped aim pitch (+-89) swallowed every further pull up while pulls down
+// still worked: "can pitch down, can't pitch up".
+TEST(Vehicles_RemoteMouseKeepsPitchingUp)
+{
+	for (const float dir : {1.0f, -1.0f}) { // +1: mouse up (nose up)
+		net::MoveInputState state;
+		float aim = 0, last = 0, lastLook = 0, early = 0, late = 0;
+		for (int i = 0; i < 120; ++i) {
+			game::SoldierInput in;
+			in.aimPitch = aim += dir * 2.0f;
+			const game::SoldierInput seen = net::soldierInputFromMove(net::playerInputFrom(in, last).toMove(i), state);
+			last = in.aimPitch;
+			const float driven = game::GameWorld::driverInput(seen, 1, lastLook).pitch;
+			lastLook = seen.aimPitch;
+			(i == 5 ? early : late) = -driven * dir; // nose-up positive in the direction pulled
+		}
+		std::fprintf(stderr, "  remote mouse stream dir %+.0f: pitch input early %.3f, after 120 ticks %.3f\n", dir, early, late);
+		CHECK(late > 0.9f * early && early > 0.2f);
+	}
 }
 
 // A recoil graph with a large exponent (eu_sni's) stays finite: the
@@ -2090,6 +2179,147 @@ TEST(Vehicles_BipodIsAStationarySeat)
 	CHECK(std::fabs(still.x - at.x) < 1e-3f && std::fabs(still.y - at.y) < 1e-3f && std::fabs(still.z - at.z) < 1e-3f);
 }
 
+// The stationary AA cannon's muzzle ray must follow its live camera after
+// the nested yaw and pitch mounts (static_aa's installed template tree).
+TEST(Vehicles_StaticAAFireFollowsItsCamera)
+{
+	if (!gameDir()) return;
+	for (const char* mod : {"mods/bf2142", "mods/Project_Remaster_v17_Final"}) {
+		if (!std::ifstream(std::string(gameDir()) + "/" + mod + "/ServerArchives.con")) continue;
+		Garage g(gameDir(), mod);
+		if (!g.loaded || !g.templates.find("static_aa")) continue;
+		const uint32_t aa = g.start("static_aa", {0, 2, 8});
+		g.animate();
+		CHECK(g.enter(aa));
+		const auto seats = g.world->vehicleSeats(aa);
+		if (!seats.empty()) {
+			menu::VehicleGuiInput gui;
+			gui.controlled = g.templates.find(seats[0].name);
+			gui.weapon = g.templates.find(seats[0].weapon);
+			CHECK(menu::weaponGuiIndex(gui.weapon, false) == 27);
+			gui.cameraMode = 1; // Inside
+			CHECK(menu::vehicleGuiIndex(gui) == 27);
+			gui.cameraMode = 2; // Nose
+			CHECK(menu::vehicleGuiIndex(gui) == 27);
+			gui.cameraMode = 3; // Chase
+			CHECK(menu::vehicleGuiIndex(gui) == 0);
+		}
+		PlayerCamera camera(*g.world, *g.systems, nullptr);
+		for (int i = 0; i < 60; ++i) {
+			g.world->setPlayerInput({});
+			g.world->tick(1 / 30.0f);
+			camera.tick(1 / 30.0f);
+		}
+		const size_t before = g.world->projectiles().size();
+		PlayerCamera::View sight;
+		bool fired = false;
+		for (int i = 0; i < 90 && !fired; ++i) {
+			camera.tick(1 / 30.0f);
+			CHECK(camera.view(sight, 16.0f / 9.0f));
+			game::SoldierInput fire;
+			fire.fire = true;
+			g.world->setPlayerInput(fire);
+			g.world->tick(1 / 30.0f);
+			for (size_t n = before; n < g.world->projectiles().size(); ++n) {
+				const game::Projectile& p = g.world->projectiles()[n];
+				if (p.shooter != aa) continue;
+				const float yaw = std::atan2(p.velocity.x, p.velocity.z);
+				const float pitch = std::atan2(p.velocity.y, std::sqrt(p.velocity.x * p.velocity.x + p.velocity.z * p.velocity.z));
+				const float error = std::acos(std::clamp(std::sin(sight.pitch) * std::sin(pitch)
+					+ std::cos(sight.pitch) * std::cos(pitch) * std::cos(yaw - sight.yaw), -1.0f, 1.0f));
+				CHECK(error < 5.0f * 3.14159265f / 180.0f);
+				fired = true;
+				break;
+			}
+		}
+		CHECK(fired);
+	}
+}
+
+// The walker's main cannon: the installed SimpleDeviationComp is low but
+// nonzero (minDev 0.25), and each actual shot must follow the posed camera
+// frame while retaining that configured spread.
+TEST(Vehicles_WalkerMainGunUsesItsAimAndConfiguredDeviation)
+{
+	if (!gameDir()) return;
+	const auto lowerName = [](std::string n) {
+		std::transform(n.begin(), n.end(), n.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		return n;
+	};
+	for (const char* mod : {"mods/bf2142", "mods/Project_Remaster_v17_Final"}) {
+		if (!std::ifstream(std::string(gameDir()) + "/" + mod + "/ServerArchives.con")) continue;
+		Garage g(gameDir(), mod);
+		if (!g.loaded || !g.templates.find("as_heavy_mech")) continue;
+		const uint32_t mech = g.start("as_heavy_mech", {0, 4, 8});
+		g.animate();
+		CHECK(g.enter(mech));
+		PlayerCamera camera(*g.world, *g.systems, nullptr);
+		constexpr float dt = 1 / 30.0f;
+		for (int i = 0; i < 60; ++i) {
+			g.world->setPlayerInput({});
+			g.world->tick(dt);
+			camera.tick(dt);
+		}
+		const auto seats = g.world->vehicleSeats(mech);
+		CHECK(!seats.empty() && lowerName(seats[0].weapon) == "as_heavy_mech_main_cannon");
+		if (!seats.empty()) {
+			menu::VehicleGuiInput gui;
+			gui.controlled = g.templates.find(seats[0].name);
+			gui.weapon = g.templates.find(seats[0].weapon);
+			CHECK(menu::weaponGuiIndex(gui.weapon, false) == 60);
+			gui.cameraMode = 1; // Inside
+			CHECK(menu::vehicleGuiIndex(gui) == 60);
+			gui.cameraMode = 2; // Nose
+			CHECK(menu::vehicleGuiIndex(gui) == 0);
+			gui.cameraMode = 3; // Chase
+			CHECK(menu::vehicleGuiIndex(gui) == 0);
+		}
+		const world::ObjectTemplate* weapon = g.templates.find("as_heavy_mech_main_cannon");
+		CHECK(weapon && weapon->settings().count("deviation.minDev")
+			&& weapon->settings().at("deviation.minDev") == "0.25");
+		if (!weapon) continue;
+		const size_t before = g.world->projectiles().size();
+		size_t observed = before;
+		bool checkedRay = false;
+		std::vector<std::pair<float, float>> spread;
+		for (int i = 0; i < 900; ++i) {
+			camera.tick(dt);
+			PlayerCamera::View sight;
+			CHECK(camera.view(sight, 16.0f / 9.0f));
+			game::SoldierInput fire;
+			fire.fire = true;
+			g.world->setPlayerInput(fire);
+			g.world->tick(dt);
+			const float cp = std::cos(sight.pitch), sp = std::sin(sight.pitch);
+			const physics::Vec3 forward {std::sin(sight.yaw) * cp, sp, std::cos(sight.yaw) * cp};
+			const physics::Vec3 right {std::cos(sight.yaw), 0, -std::sin(sight.yaw)};
+			const physics::Vec3 up = physics::cross(forward, right);
+			for (size_t n = observed; n < g.world->projectiles().size(); ++n) {
+				const game::Projectile& p = g.world->projectiles()[n];
+				if (p.shooter != mech) continue;
+				const float speed = std::sqrt(physics::lengthSquared(p.velocity));
+				if (speed < 1e-4f) continue;
+				const physics::Vec3 ray = p.velocity * (1 / speed);
+				const float along = physics::dot(ray, forward);
+				if (!checkedRay) {
+					const float error = std::acos(std::clamp(along, -1.0f, 1.0f));
+					CHECK(error < 5.0f * 3.14159265f / 180.0f);
+					checkedRay = true;
+				}
+				spread.emplace_back(std::atan2(physics::dot(ray, right), along), std::atan2(physics::dot(ray, up), along));
+			}
+			observed = g.world->projectiles().size();
+		}
+		CHECK(checkedRay && spread.size() >= 5);
+		if (!spread.empty()) {
+			double squares = 0;
+			for (const auto& [right, up] : spread) squares += right * right + up * up;
+			const float rmsDegrees = static_cast<float>(std::sqrt(squares / spread.size()) * 57.29578);
+			CHECK(rmsDegrees > 0.01f && rmsDegrees < 1.0f);
+		}
+	}
+}
+
 // The heavy IFV's shield cells (SeatBehaviours.cpp): each
 // ifv_shield_the_generator's mesh is the vehicle's for the rounds, so a
 // round strikes the cell and hurts its armour (110 hit points), not the
@@ -2178,4 +2408,305 @@ TEST(Vehicles_StaticGunnerSitsOnTheCockpit)
 	const float after = g.yaw(me.soldier);
 	std::fprintf(stderr, "  static_av: gun yaw %.1f, gunner %.1f -> %.1f\n", yaw, before, after);
 	CHECK(std::fabs(yaw) > 5 && std::fabs(std::remainder(after - before - yaw, 360.0f)) < 1);
+}
+
+TEST(PlayerCamera_ReloadAndWalkerWithGameAssets)
+{
+	if (!gameDir()) return;
+	Garage g(gameDir());
+	if (!g.loaded) return;
+	g.files.setMountingAllowed(true);
+	std::string out;
+	g.console.run("ClientArchives.con", {}, out);
+	g.files.setMountingAllowed(false);
+	anim::AnimationSystems systems([&](const std::string& path, std::vector<uint8_t>& bytes) { return g.files.readFile(path, bytes); });
+	anim::registerAnimationConsoleMethods(g.console, systems);
+	g.console.run("Objects/Soldiers/Common/Animations/ValueHolders.inc", {}, out);
+	const auto load = [&](const std::string& path) { return systems.get(path, [&] { g.console.run(path, {}, out); }); };
+	const uint32_t walker = g.start("as_heavy_mech", {0, 4, 30});
+	g.world->setAnimationSystems(&systems, load);
+	CHECK(g.world->spawnPlayer(2));
+	PlayerCamera camera(*g.world, systems, load);
+	const auto step = [&](game::SoldierInput input = {}) {
+		g.world->setPlayerInput(input);
+		g.world->tick(1 / 30.0f);
+		camera.tick(1 / 30.0f);
+	};
+	for (int i = 0; i < 90; ++i) step();
+	camera.setAltFire(true);
+	step();
+	camera.setAltFire(false);
+	for (int i = 0; i < 30; ++i) step();
+	CHECK(camera.zoomLevel() > 0);
+	game::SoldierInput fire;
+	fire.fire = true;
+	for (int i = 0; i < 10; ++i) step(fire);
+	game::SoldierInput reload;
+	reload.reload = true;
+	step(reload);
+	CHECK(g.world->playerWeapon()->reloading());
+	CHECK(camera.zoomLevel() == 0);
+	for (int i = 0; i < 15; ++i) step();
+	const auto playing = camera.playing();
+	CHECK(std::find(playing.begin(), playing.end(), "reload") != playing.end());
+	for (int i = 0; i < 150; ++i) step();
+	CHECK(!g.world->playerWeapon()->reloading());
+	const auto finished = camera.playing();
+	CHECK(std::find(finished.begin(), finished.end(), "reload") == finished.end());
+	CHECK(g.enter(walker));
+	for (int i = 0; i < 90; ++i) step();
+	PlayerCamera::View inside;
+	CHECK(camera.view(inside, 16.0f / 9.0f));
+	PlayerCamera::Cockpit cockpit;
+	CHECK(camera.cockpit(cockpit) && cockpit.vehicle == walker && cockpit.subGeometry == 0);
+	CHECK(inside.position[1] > g.objects.find(walker)->position().y);
+	camera.toggleMode();
+	CHECK(!camera.insideView() && camera.mode() != game::camera::Mode::Inside);
+	CHECK(camera.selectView(1));
+	CHECK(camera.insideView());
+}
+
+TEST(PlayerCamera_TankZoomRetainsShortClicks)
+{
+	if (!gameDir()) return;
+	for (const char* mod : {"mods/bf2142", "mods/Project_Remaster_v17_Final"}) {
+		if (!std::ifstream(std::string(gameDir()) + "/" + mod + "/ServerArchives.con")) continue;
+		for (const char* name : {"eu_tank", "as_tank"}) {
+			Garage g(gameDir(), mod);
+			if (!g.loaded) return;
+			const auto tank = g.start(name, {0, 2, 6});
+			CHECK(g.enter(tank));
+			anim::AnimationSystems systems(nullptr);
+			PlayerCamera camera(*g.world, systems, nullptr);
+			const auto step = [&] {
+				g.world->setPlayerInput({});
+				g.world->tick(1 / 30.0f);
+				camera.tick(1 / 30.0f);
+			};
+			for (int i = 0; i < 60; ++i) step();
+			const float wide = camera.fieldOfView();
+			camera.setAltFire(true);
+			step();
+			camera.setAltFire(false);
+			for (int i = 0; i < 30; ++i) step();
+			const float zoomed = camera.fieldOfView();
+			std::fprintf(stderr, "  %s %s zoom level %d: fov %.4f -> %.4f\n", mod, name, camera.seatZoomLevel(), wide, zoomed);
+			CHECK(camera.seatZoomLevel() == 1);
+			CHECK(zoomed < wide * 0.75f);
+			camera.setAltFire(true);
+			step();
+			camera.setAltFire(false);
+			for (int i = 0; i < 30; ++i) step();
+			CHECK(camera.seatZoomLevel() == 0);
+			CHECK(near(camera.fieldOfView(), wide));
+			// A mouse press/release can occur between 30 Hz camera ticks.
+			camera.setAltFire(true);
+			camera.setAltFire(false);
+			for (int i = 0; i < 30; ++i) step();
+			CHECK(camera.seatZoomLevel() == 1);
+			CHECK(camera.fieldOfView() < wide * 0.75f);
+		}
+	}
+}
+
+// The gunships' pilot gun (MultiFireComp, fire.addFireRate 0 = single fire, mag 10, ammo.autoReload),
+// vanilla and Remaster alike (Remaster adds only a DefaultZoomComp, which the world never sees): a held
+// trigger fires one round, each fresh press one more, an emptied magazine reloads itself and the
+// next press fires again. Nothing else locks the gun.
+TEST(Vehicles_GunshipPilotGunFiresPerPressAndReloads)
+{
+	if (!gameDir()) {
+		return;
+	}
+	for (const char* mod : {"mods/bf2142", "mods/Project_Remaster_v17_Final"}) {
+		for (const char* name : {"as_ag", "us_ag"}) {
+			Garage g(gameDir(), mod);
+			if (!g.loaded || !g.templates.find(name)) {
+				continue;
+			}
+			const uint32_t v = g.start(name, {0, 4, 6});
+			CHECK(g.enter(v));
+			const int me = g.world->localPlayer();
+			const auto* gun = g.world->gun(v, 0);
+			CHECK(gun != nullptr);
+			if (!gun) {
+				continue;
+			}
+			CHECK(gun->fireMode() == 0);
+			const auto rounds = [&] {
+				game::GameWorld::PlayerInfo info;
+				g.world->playerInfo(me, info);
+				return static_cast<int>(info.gunShots);
+			};
+			g.run(8); // the weapon's draw
+			const int first = rounds();
+			game::SoldierInput hold;
+			hold.fire = true;
+			for (int i = 0; i < 60; ++i) {
+				g.world->setPlayerInput(hold);
+				g.world->tick(1 / 30.0f);
+			}
+			CHECK(rounds() == first + 1); // held: one round
+			g.world->setPlayerInput({});
+			g.run(1);
+			// Tapped through the whole magazine, its reload and on: a round every press.
+			int fired = 0;
+			for (int i = 0; i < 40; ++i) {
+				game::SoldierInput tap;
+				tap.fire = true;
+				const int before = rounds();
+				g.world->setPlayerInput(tap);
+				g.world->tick(1 / 30.0f);
+				fired += rounds() > before;
+				g.world->setPlayerInput({});
+				g.run(1.2f); // past the cooldown, and the reload when the magazine ran out
+			}
+			CHECK(fired == 40);
+		}
+	}
+}
+
+// The gunships' gunner (as_ag / us_ag seat 2, vanilla and Remaster): the
+// seat camera hangs under the turret bundles, so the view turns with the
+// mouse and follows the gun's yaw and pitch; and it draws geometry 1 of
+// the mesh (cockpitSubGeom 1, the whole exterior hull, seen from inside:
+// the renderer culls its back faces), where the pilot's is geometry 0.
+TEST(PlayerCamera_GunshipGunnerTurnsWithTheGun)
+{
+	if (!gameDir()) return;
+	constexpr float kDeg = 3.14159265f / 180;
+	for (const char* mod : {"mods/bf2142", "mods/Project_Remaster_v17_Final"}) {
+		if (!std::ifstream(std::string(gameDir()) + "/" + mod + "/ServerArchives.con")) continue;
+		for (const char* name : {"as_ag", "us_ag"}) {
+			Garage g(gameDir(), mod);
+			if (!g.loaded || !g.templates.find(name)) continue;
+			const auto ship = g.start(name, {0, 2, 6});
+			CHECK(g.enter(ship));
+			anim::AnimationSystems systems(nullptr);
+			PlayerCamera camera(*g.world, systems, nullptr);
+			PlayerCamera::Cockpit cockpit;
+			camera.tick(1 / 30.0f);
+			CHECK(camera.cockpit(cockpit) && cockpit.subGeometry == 0);
+			game::SoldierInput sw;
+			sw.switchSeat = 2;
+			g.world->setPlayerInput(sw);
+			g.world->tick(1 / 30.0f);
+			for (int i = 0; i < 20; ++i) { g.world->setPlayerInput({}); g.world->tick(1 / 30.0f); camera.tick(1 / 30.0f); }
+			CHECK(camera.cockpit(cockpit) && cockpit.vehicle == ship && cockpit.subGeometry == 1);
+			PlayerCamera::View rest, turned;
+			CHECK(camera.view(rest, 16.0f / 9.0f));
+			float gunYaw = 0, gunPitch = 0;
+			game::SoldierInput look;
+			look.turn = 20;
+			look.aimPitch = 25;
+			for (int i = 0; i < 15; ++i) { g.world->setPlayerInput(look); g.world->tick(1 / 30.0f); camera.tick(1 / 30.0f); look.turn = 0; }
+			CHECK(camera.view(turned, 16.0f / 9.0f));
+			game::GameWorld::PlayerInfo me;
+			g.world->playerInfo(g.world->localPlayer(), me);
+			CHECK(g.world->gunAim(ship, me.seat, gunYaw, gunPitch));
+			std::fprintf(stderr, "  %s %s gunner: gun %.1f/%.1f, view yaw %.1f -> %.1f, pitch %.1f -> %.1f\n", mod, name, gunYaw, gunPitch,
+				rest.yaw / kDeg, turned.yaw / kDeg, rest.pitch / kDeg, turned.pitch / kDeg);
+			CHECK(std::fabs(gunYaw - 20) < 1 && gunPitch > 10);
+			CHECK(std::fabs((turned.yaw - rest.yaw) / kDeg - gunYaw) < 1);
+			CHECK(std::fabs((turned.pitch - rest.pitch) / kDeg - gunPitch) < 1);
+		}
+	}
+}
+
+// The cockpit geometry selector is asked about every multi-geometry object
+// during a scene sync. Only the occupied vehicle can use the seat camera;
+// unrelated objects must not trigger its recursive template-tree lookup.
+TEST(PlayerCamera_GunshipCockpitSelectionIsScopedToTheOccupiedHull)
+{
+	if (!gameDir()) return;
+	Garage g(gameDir());
+	if (!g.loaded || !g.templates.find("as_ag")) return;
+	const uint32_t ship = g.start("as_ag", {0, 3, 8});
+	const uint32_t other = g.objects.create(g.templates.find("as_ag"), {40, 3, 8})->id();
+	CHECK(g.enter(ship));
+	anim::AnimationSystems systems(nullptr);
+	PlayerCamera camera(*g.world, systems, nullptr);
+	camera.tick(1 / 30.0f);
+	PlayerCamera::Cockpit cockpit;
+	CHECK(camera.cockpit(cockpit, ship) && cockpit.vehicle == ship && cockpit.subGeometry == 0);
+	CHECK(!camera.cockpit(cockpit, other));
+	CHECK(camera.cockpit(cockpit) && cockpit.vehicle == ship); // frame-level query remains available
+	// CPU-only actual-template probe: compare the old query shape (resolve the
+	// active camera tree for every geometry) with object-scoped misses (the
+	// renderer's many non-player objects). This is not a frame-time/fps claim.
+	volatile int resolved = 0;
+	constexpr int queries = 500;
+	const auto wholeTreeStart = std::chrono::steady_clock::now();
+	for (int i = 0; i < queries; ++i) resolved += camera.cockpit(cockpit) ? 1 : 0;
+	const auto wholeTreeEnd = std::chrono::steady_clock::now();
+	const auto scopedStart = std::chrono::steady_clock::now();
+	for (int i = 0; i < queries; ++i) resolved += camera.cockpit(cockpit, other) ? 1 : 0;
+	const auto scopedEnd = std::chrono::steady_clock::now();
+	const auto wholeUs = std::chrono::duration_cast<std::chrono::microseconds>(wholeTreeEnd - wholeTreeStart).count();
+	const auto scopedUs = std::chrono::duration_cast<std::chrono::microseconds>(scopedEnd - scopedStart).count();
+	std::fprintf(stderr, "  as_ag CPU probe: %d full camera-tree queries %lld us; %d unrelated-object queries %lld us\n",
+		queries, static_cast<long long>(wholeUs), queries, static_cast<long long>(scopedUs));
+	CHECK(resolved == queries);
+}
+
+// C selects the gunship's Chase camera. That seat-local choice must not
+// survive leaving the Raider as a third-person infantry camera. The explicit
+// --camera-mode third setting remains honored on foot.
+TEST(PlayerCamera_GunshipExitRestoresConfiguredInfantryView)
+{
+	if (!gameDir()) return;
+	for (const bool diagnosticThird : {false, true}) {
+		Garage g(gameDir());
+		if (!g.loaded || !g.templates.find("as_ag")) continue;
+		const uint32_t ship = g.start("as_ag", {0, 3, 8});
+		CHECK(g.enter(ship));
+		anim::AnimationSystems systems(nullptr);
+		PlayerCamera camera(*g.world, systems, nullptr);
+		camera.spawnFirstPerson = !diagnosticThird;
+		camera.firstPerson = !diagnosticThird;
+		camera.tick(1 / 30.0f);
+		CHECK(camera.selectView(2));
+		CHECK(!camera.insideView());
+		game::SoldierInput leave;
+		leave.use = true;
+		g.world->setPlayerInput(leave);
+		g.world->tick(1 / 30.0f);
+		g.world->setPlayerInput({});
+		camera.tick(1 / 30.0f);
+		CHECK(!g.world->playerVehicle());
+		CHECK(camera.firstPerson == !diagnosticThird);
+		CHECK(camera.insideView() == !diagnosticThird);
+	}
+}
+
+// A gunship's pilot view is mounted to the hull and should carry the hull's
+// bank. Chase is the shipped camera's level-horizon view; the model itself
+// remains banked while the camera stays level.
+TEST(PlayerCamera_GunshipBankingInsideAndLevelHorizonInChase)
+{
+	if (!gameDir()) return;
+	Garage g(gameDir());
+	if (!g.loaded || !g.templates.find("as_ag")) return;
+	const uint32_t ship = g.start("as_ag", {0, 3, 8});
+	CHECK(g.enter(ship));
+	anim::AnimationSystems systems(nullptr);
+	PlayerCamera camera(*g.world, systems, nullptr);
+	camera.tick(1 / 30.0f);
+	game::SoldierInput bank;
+	bank.throttle = 1;
+	bank.rollAxis = 1;
+	g.drive(bank, 1.5f);
+	camera.tick(1 / 30.0f);
+	const float hullBank = g.objects.find(ship)->rotation().z;
+	std::fprintf(stderr, "  as_ag pilot hull bank %.2f deg\n", hullBank);
+	CHECK(std::fabs(hullBank) > 0.02f);
+	PlayerCamera::View inside;
+	CHECK(camera.view(inside, 16.0f / 9.0f));
+	CHECK(std::fabs(inside.roll - hullBank * 3.14159265f / 180) < 0.03f);
+	CHECK(camera.selectView(2));
+	camera.tick(1 / 30.0f);
+	PlayerCamera::View chase;
+	CHECK(camera.externalView(chase, 16.0f / 9.0f));
+	CHECK(std::fabs(chase.roll) < 1e-6f);
+	CHECK(std::fabs(g.objects.find(ship)->rotation().z) > 0.02f);
 }

@@ -170,6 +170,22 @@ TEST(GameSounds_WeaponSounds)
 	CHECK(s.triggered.back().name == "S_rifle_Fire1P");
 }
 
+// A generated event template can exist without a sample. The vanilla
+// heavy walker's main cannon leaves Fire1P_Outdoor empty, so outdoors a
+// first-person shot must fall back to its configured Fire1P sample.
+TEST(GameSounds_EmptyOutdoorFireVariantFallsBackToFirstPerson)
+{
+	Sounds s;
+	addSoundTemplate(s.templates, "S_walker_cannon_Fire1P");
+	auto* outdoor = dynamic_cast<sound::SoundObjectTemplate*>(
+		s.templates.create(sound::SoundObjectTemplate::kClassId, "S_walker_cannon_Fire1P_Outdoor"));
+	CHECK(outdoor != nullptr && !outdoor->hasFiles());
+	sound::GameSounds::FireInfo fire;
+	fire.mode = 0;
+	s.game.weapon(sound::GameSounds::WeaponEvent::Fire, "walker_cannon", true, {}, true, 1, 0, &fire);
+	CHECK(s.triggered.size() == 1 && s.triggered[0].name == "S_walker_cannon_Fire1P");
+}
+
 // 0x007fa100: two rays up and one down, 15 m; a 6 m room gives
 // 0.5 x 6 / (0.98 x 6 + 0.3).
 TEST(SoundManager_IndoorLevel)
@@ -388,8 +404,10 @@ TEST(GameAudio_WeaponsOfARound)
 	range.world->setPlayerInput(fire);
 	GameAudio::Camera camera;
 	camera.firstPerson = true;
+	int acceptedShots = 0;
 	for (int tick = 0; tick < 12; ++tick) {
 		range.world->tick(1 / 30.0f);
+		acceptedShots += range.world->playerWeapon()->firedThisTick();
 		audio.tick(camera);
 	}
 	// The rifle has no ammo.autoReload: run dry it stays empty, and a new
@@ -400,6 +418,7 @@ TEST(GameAudio_WeaponsOfARound)
 	range.world->tick(1 / 30.0f);
 	range.world->setPlayerInput(fire);
 	range.world->tick(1 / 30.0f);
+	acceptedShots += range.world->playerWeapon()->firedThisTick();
 	audio.tick(camera);
 	CHECK(range.count("S_eu_ar_rifle_TriggerClick") == 1);
 	game::SoldierInput reload;
@@ -410,22 +429,27 @@ TEST(GameAudio_WeaponsOfARound)
 	range.world->setPlayerInput(fire);
 	for (int tick = 0; tick < 30; ++tick) {
 		range.world->tick(1 / 30.0f);
+		acceptedShots += range.world->playerWeapon()->firedThisTick();
 		audio.tick(camera);
 	}
-	// An automatic rifle with one sample: it loops from the first round
-	// (0x005dbdc0's +0x43) until the reload stops it, and again after.
-	CHECK(range.count("S_eu_ar_rifle_Fire1P") == 2 && range.count("S_eu_ar_rifle_Fire3P") == 0);
+	// Local rifle audio follows each accepted round, including after reload.
+	CHECK(range.count("S_eu_ar_rifle_Fire1P") == static_cast<size_t>(acceptedShots) && acceptedShots >= 4 && range.count("S_eu_ar_rifle_Fire3P") == 0);
 	CHECK(range.count("S_eu_ar_rifle_Reload1P") == 1 && audio.weaponSounds >= 4);
 	range.world->setPlayerInput(reload);
 	range.world->tick(1 / 30.0f);
 	range.world->setPlayerInput(fire);
 	// From the chase camera the same rifle is a 3P sound.
 	camera.firstPerson = false;
+	int thirdPersonAcceptedShots = 0;
 	for (int tick = 0; tick < 40; ++tick) {
 		range.world->tick(1 / 30.0f);
+		const int fired = range.world->playerWeapon()->firedThisTick();
+		acceptedShots += fired;
+		thirdPersonAcceptedShots += fired;
 		audio.tick(camera);
 	}
-	CHECK(range.count("S_eu_ar_rifle_Fire3P") >= 1);
+	CHECK(thirdPersonAcceptedShots >= 2); // enough rounds to distinguish one free-running loop
+	CHECK(range.count("S_eu_ar_rifle_Fire3P") == static_cast<size_t>(thirdPersonAcceptedShots));
 }
 
 // The local player's radio through GameAudio: a teammate's message within
@@ -460,6 +484,12 @@ TEST(GameAudio_RadioVoiceOverAndAutomaticMessages)
 	audio.tick({});
 	CHECK(audio.radioHeard == 1 && audio.voiceOvers == 1 && !played.empty()
 		&& played.back() == "sound/vo/English/grunt/No_filter/a.ogg");
+	// The local radio menu echoes its selected message to the sender. It
+	// must play the radio sample without a speaker filter.
+	const int local = range.world->localPlayer();
+	range.world->hearRadio(local, game::GameWorld::targetChannel("TCTeam"), "roger_that", local);
+	audio.tick({});
+	CHECK(played.back() == "sound/vo/English/grunt/filter/a.ogg");
 	// EU takes the silo: played here only, the local player's (EU's) message
 	// (0x00656e80 through game slot 0x60).
 	object->setTeam(2);
@@ -597,6 +627,29 @@ TEST(GameSounds_FireSampleRules)
 	s.game.weapon(E::Fire, "odd", false, {}, true, 5, 0, &throwInfo);
 	CHECK(s.triggered.size() == odd);
 	CHECK(s.game.sampleCount("S_nade_Fire3P") == 4 && s.game.sampleCount("S_mg_Fire3P") == 1);
+}
+
+// An automatic local weapon changes its loop when the listener leaves the
+// first-person camera while fire remains held.
+TEST(GameSounds_AutomaticFireTracksCameraPerspective)
+{
+	Sounds s;
+	addSoundTemplate(s.templates, "S_mg_Fire1P");
+	addSoundTemplate(s.templates, "S_mg_Fire3P");
+	sound::GameSounds::FireInfo automatic;
+	automatic.mode = 2;
+	s.game.weapon(sound::GameSounds::WeaponEvent::Fire, "mg", true, {4, 5, 6}, true, 17, 9, &automatic);
+	CHECK(s.triggered.size() == 1 && s.triggered.back().name == "S_mg_Fire1P");
+	CHECK(s.game.fireLooping(17) && s.manager.muted(4));
+	automatic.synchronizeShots = false;
+	s.game.weapon(sound::GameSounds::WeaponEvent::Fire, "mg", false, {4, 5, 6}, true, 17, 9, &automatic);
+	CHECK(s.triggered.size() == 2 && s.triggered.back().name == "S_mg_Fire3P");
+	CHECK(s.game.fireLooping(17) && !s.manager.muted(4));
+	s.game.weapon(sound::GameSounds::WeaponEvent::Fire, "mg", true, {4, 5, 6}, true, 17, 9, &automatic);
+	CHECK(s.triggered.size() == 3 && s.triggered.back().name == "S_mg_Fire1P");
+	CHECK(s.game.fireLooping(17) && s.manager.muted(4));
+	s.game.releaseTrigger(17);
+	CHECK(!s.game.fireLooping(17) && !s.manager.muted(4));
 }
 
 // 0x005dbfe0 by the reload state and samples: one sample plays at a
@@ -766,4 +819,56 @@ TEST(GameAudio_InjurySound)
 	CHECK(audio.listenerState().injuries == 2);
 	// On foot in the open, first person: the wind is wanted.
 	CHECK(audio.listenerState().windWanted && audio.listenerState().seat.empty());
+}
+
+TEST(GameSounds_LocalRoundsDoNotFreeRun)
+{
+	Sounds s;
+	addSoundTemplate(s.templates, "S_rifle_Fire1P");
+	sound::GameSounds::FireInfo fire;
+	fire.mode = 2;
+	fire.synchronizeShots = true;
+	for (int i = 0; i < 5; ++i) {
+		s.game.weapon(sound::GameSounds::WeaponEvent::Fire, "rifle", true, {}, true, 1, 0, &fire);
+		CHECK(!s.game.fireLooping(1));
+	}
+	CHECK(s.triggered.size() == 5);
+	addSoundTemplate(s.templates, "S_rifle_Fire3P");
+	fire.synchronizeShots = false;
+	s.game.weapon(sound::GameSounds::WeaponEvent::Fire, "rifle", false, {}, true, 1, 0, &fire);
+	CHECK(s.game.fireLooping(1));
+	fire.synchronizeShots = true;
+	s.game.weapon(sound::GameSounds::WeaponEvent::Fire, "rifle", true, {}, true, 1, 0, &fire);
+	CHECK(!s.game.fireLooping(1) && s.triggered.size() == 7);
+}
+
+// A seat's launcher (fire.addFireRate 0) plays its one-shot sample for each
+// round; a seat's minigun (no fire rates: automatic) loops it until released;
+// the cannon and rockets of one seat are separate fire components, so one's
+// rounds don't cut the other's loop.
+TEST(GameSounds_SeatCannonAndRocketsDoNotCutEachOther)
+{
+	Sounds s;
+	addSoundTemplate(s.templates, "S_cannon_Fire3P");
+	addSoundTemplate(s.templates, "S_rocket_Fire3P");
+	using E = sound::GameSounds::WeaponEvent;
+	sound::GameSounds::FireInfo single;
+	single.mode = 0;
+	single.burstRounds = 1;
+	single.roundsPerMinute = 120;
+	for (int i = 0; i < 3; ++i) {
+		s.game.weapon(E::Fire, "rocket", false, {}, true, 10, 0, &single);
+	}
+	CHECK(s.triggered.size() == 3 && !s.game.fireLooping(10));
+	sound::GameSounds::FireInfo automatic;
+	automatic.mode = 2;
+	automatic.burstRounds = 1;
+	s.game.weapon(E::Fire, "cannon", false, {}, true, 11, 0, &automatic);
+	s.game.weapon(E::Fire, "cannon", false, {}, true, 11, 0, &automatic);
+	CHECK(s.triggered.size() == 4 && s.game.fireLooping(11));
+	// Rockets fired while the cannon holds its loop (another state key).
+	s.game.weapon(E::Fire, "rocket", false, {}, true, 12, 0, &single);
+	CHECK(s.triggered.size() == 5 && s.game.fireLooping(11) && !s.game.fireLooping(12));
+	s.game.releaseTrigger(11);
+	CHECK(!s.game.fireLooping(11));
 }

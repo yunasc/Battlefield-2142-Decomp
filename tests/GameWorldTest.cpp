@@ -183,6 +183,10 @@ TEST(GameWorld_SoldiersShootAndDie)
 	CHECK(range.count("PlayerKilled") == 1);
 	CHECK(info.manDown && range.count("PlayerDeath") == 0); // down, still revivable
 	CHECK(tick > 6 && tick < 30); // about 0.2 s: three rounds at 600 a minute, 20 m
+	const auto deathSounds = range.world->takeSounds();
+	CHECK(std::any_of(deathSounds.begin(), deathSounds.end(), [](const game::GameWorld::SoundEvent& sound) {
+		return sound.sound == "S_pac_light_soldier_Death";
+	}));
 
 	// It comes back after the spawn time, the body gone (PlayerDeath first).
 	range.world->setPlayerInput({});
@@ -191,6 +195,84 @@ TEST(GameWorld_SoldiersShootAndDie)
 	}
 	CHECK(range.world->playerInfo(bot, info) && info.alive && info.soldier != 0 && !info.manDown);
 	CHECK(range.count("PlayerDeath") == 1 && range.count("PlayerSpawn") == 3);
+}
+
+// The hit indicator (Player +0x2a4, 0x004ba070 / 0x005912c0): a round that
+// damages something raises the shooter's alpha to 1, fading 3 a second; a
+// miss, sv.hitIndicator off, or a hit on a zero-friendly-fire teammate don't.
+TEST(GameWorld_HitIndicatorRaisedByDamageAndFades)
+{
+	const auto run = [](bool enemy, bool setting, bool aim) {
+		Range range;
+		range.world->setHitIndicator(setting);
+		game::GameWorld::FriendlyFire ff;
+		ff.soldier = 0;
+		range.world->setFriendlyFire(ff);
+		const int bot = range.world->addPlayer("Bot", enemy ? 1 : 2, true);
+		if (aim) {
+			CHECK(range.world->spawnSoldier(bot));
+		}
+		CHECK(range.world->spawnPlayer(2) != nullptr);
+		const int me = range.world->localPlayer();
+		game::SoldierInput fire;
+		fire.fire = true;
+		range.world->setPlayerInput(fire);
+		float peak = 0;
+		for (int i = 0; i < 6; ++i) {
+			range.world->tick(1 / 30.0f);
+			peak = std::max(peak, range.world->hitIndicator(me));
+		}
+		range.world->setPlayerInput({});
+		return peak;
+	};
+	CHECK(run(true, true, true) > 0.5f);
+	CHECK(run(true, true, false) == 0);
+	CHECK(run(true, false, true) == 0);
+	CHECK(run(false, true, true) == 0);
+
+	Range range;
+	const int bot = range.world->addPlayer("Bot", 1, true);
+	CHECK(range.world->spawnSoldier(bot));
+	CHECK(range.world->spawnPlayer(2) != nullptr);
+	const int me = range.world->localPlayer();
+	game::SoldierInput fire;
+	fire.fire = true;
+	range.world->setPlayerInput(fire);
+	for (int i = 0; i < 6 && range.world->hitIndicator(me) == 0; ++i) {
+		range.world->tick(1 / 30.0f);
+	}
+	range.world->setPlayerInput({});
+	CHECK(range.world->hitIndicator(me) > 0.5f);
+	for (int i = 0; i < 12; ++i) {
+		range.world->tick(1 / 30.0f); // 0.4 s at 3 a second: gone
+	}
+	CHECK(range.world->hitIndicator(me) == 0);
+}
+
+TEST(GameWorld_InitialDeploymentJoinsWithoutDeathThenSpawnsAtChoice)
+{
+	Range range;
+	const int local = range.world->joinPlayer(2);
+	CHECK(local == range.world->localPlayer());
+	game::GameWorld::PlayerInfo info;
+	CHECK(range.world->playerInfo(local, info) && !info.alive && info.team == 2 && info.deaths == 0);
+	CHECK(range.world->playerObject() == 0);
+	CHECK(range.count("PlayerDeath") == 0 && range.count("PlayerSpawn") == 0);
+	for (int i = 0; i < 90; ++i) range.world->tick(1 / 30.0f);
+	CHECK(range.world->playerInfo(local, info) && !info.alive && info.deaths == 0);
+	CHECK(range.count("PlayerDeath") == 0 && range.count("PlayerSpawn") == 0);
+
+	range.world->setKit(local, "EU_Assault", "us_light_soldier");
+	range.world->setSpawnChoice(local, 2);
+	CHECK(range.world->spawnSoldier(local));
+	CHECK(range.world->playerInfo(local, info) && info.alive && info.deaths == 0);
+	CHECK(range.world->spawnChoice(local) == 2);
+	CHECK(range.count("PlayerDeath") == 0 && range.count("PlayerSpawn") == 1);
+	// Reusing spawnPlayer for an already living local player must not
+	// change its team behind the team-change permission checks.
+	const auto soldier = range.world->playerObject();
+	CHECK(range.world->spawnPlayer(1)->id() == soldier);
+	CHECK(range.world->playerTeam() == 2);
 }
 
 // Team damage on a soldier (TeamDamage.cpp: 0x006557a0, 0x004c0e40): a
@@ -485,6 +567,60 @@ TEST(GameWorld_WeaponSwitching)
 	range.world->setPlayerInput(input);
 	range.world->tick(1 / 30.0f);
 	CHECK(held() == "eu_ar_rifle" && range.world->playerWeapon()->roundsInMag() == rifleRounds);
+}
+
+TEST(GameWorld_ProfileAutoReload)
+{
+	Range range;
+	range.templates.registerType(6, "Kit");
+	world::ObjectTemplate* rifle = range.templates.find("eu_ar_rifle");
+	rifle->settings()["itemIndex"] = "3";
+	rifle->settings()["ammo.magSize"] = "1";
+	rifle->settings()["ammo.nrOfMags"] = "2";
+	rifle->settings()["ammo.reloadTime"] = "0.1";
+	world::ObjectTemplate* kit = range.templates.create("Kit", "EU_Assault");
+	kit->children().push_back({"eu_ar_rifle", {}, {}});
+	CHECK(range.world->spawnPlayer(2) != nullptr);
+	range.world->setAutoReload(true);
+	const int mags = range.world->playerWeapon()->magsLeft();
+
+	game::SoldierInput fire;
+	fire.fire = true;
+	range.world->setPlayerInput(fire);
+	range.world->tick(1 / 30.0f); // last round
+	CHECK(range.world->playerWeapon()->roundsInMag() == 0);
+	range.world->setPlayerInput({}); // releasing immediately still reloads
+	range.world->tick(1 / 30.0f);
+	CHECK(range.world->playerWeapon()->reloading());
+	for (int i = 0; i < 8; ++i) range.world->tick(1 / 30.0f);
+	CHECK(!range.world->playerWeapon()->reloading());
+	CHECK(range.world->playerWeapon()->roundsInMag() == 1);
+	CHECK(range.world->playerWeapon()->magsLeft() == mags - 1);
+
+	// With no spare magazine, a held trigger cannot restart reloads per tick.
+	game::SoldierInput held;
+	held.fire = true;
+	range.world->setPlayerInput(held);
+	range.world->tick(1 / 30.0f);
+	CHECK(range.world->playerWeapon()->roundsInMag() == 0);
+	for (int i = 0; i < 30; ++i) range.world->tick(1 / 30.0f);
+	CHECK(!range.world->playerWeapon()->reloading());
+	CHECK(range.world->playerWeapon()->roundsInMag() == 0);
+
+	// Negative reserve counts mean unlimited magazines, not no ammunition.
+	Range infinite;
+	auto* unlimited = infinite.templates.find("eu_ar_rifle");
+	unlimited->settings()["ammo.magSize"] = "1";
+	unlimited->settings()["ammo.nrOfMags"] = "-1";
+	unlimited->settings()["ammo.reloadTime"] = "0.1";
+	CHECK(infinite.world->spawnPlayer(2) != nullptr);
+	infinite.world->setAutoReload(true);
+	infinite.world->setPlayerInput(fire);
+	infinite.world->tick(1 / 30.0f);
+	infinite.world->setPlayerInput({});
+	for (int i = 0; i < 12; ++i) infinite.world->tick(1 / 30.0f);
+	CHECK(infinite.world->playerWeapon()->roundsInMag() == 1);
+	CHECK(infinite.world->playerWeapon()->magsLeft() < 0);
 }
 
 TEST(GameWorld_GadgetsHealAndResupply)
@@ -5039,4 +5175,57 @@ TEST(GameWorld_OrderTagByItsMarker)
 	CHECK(same(game::GameWorld::orderTagPoint({10, 3, 20}, 4.49f), {10, 5.99f, 20})); // just under 1.5 m
 	CHECK(same(game::GameWorld::orderTagPoint({10, 3, 20}, 4.5f), {10, 3, 20}));     // a roof 1.5 m up
 	CHECK(same(game::GameWorld::orderTagPoint({10, 3, 20}, 1.0f), {10, 3, 20}));     // the point over water
+}
+
+// The profile's auto reload waits while the player still steers an
+// aim-guided round (eu_av with target.disableGuidanceOnReload): reloading at
+// once would cut the wire and drop the zoom. It reloads once the round is gone.
+TEST(GameWorld_ProfileAutoReloadWaitsForGuidedRound)
+{
+	Range range;
+	world::ObjectTemplate* launcher = range.templates.find("eu_ar_rifle");
+	launcher->settings()["projectileTemplate"] = "missile";
+	launcher->settings()["velocity"] = "40";
+	launcher->settings()["ammo.magSize"] = "1";
+	launcher->settings()["ammo.nrOfMags"] = "4";
+	launcher->settings()["ammo.reloadTime"] = "0.1";
+	launcher->settings()["target.disableGuidanceOnReload"] = "1";
+	world::ObjectTemplate* missile = range.templates.create("GenericProjectile", "missile");
+	missile->settings()["seek.targetType"] = "TTUnique";
+	missile->settings()["seek.trackingDelay"] = "0.01";
+	missile->settings()["follow.maxYaw"] = "0.45";
+	missile->settings()["follow.maxPitch"] = "0.85";
+	missile->settings()["gravityModifier"] = "0";
+	missile->settings()["timeToLive"] = "CRD_NONE/1.5/0/0";
+	CHECK(range.world->spawnPlayer(2) != nullptr);
+	range.world->setAutoReload(true);
+	game::SoldierInput input;
+	input.fire = true;
+	input.aimPitch = 3;
+	range.world->setPlayerInput(input);
+	range.world->tick(1 / 30.0f);
+	input.fire = false;
+	range.world->setPlayerInput(input);
+	range.world->tick(1 / 30.0f);
+	range.world->tick(1 / 30.0f); // the empty magazine: the reload would have started by now
+	input.turn = 30;
+	range.world->setPlayerInput(input);
+	range.world->tick(1 / 30.0f);
+	input.turn = 0;
+	range.world->setPlayerInput(input);
+	for (int i = 0; i < 20; ++i) {
+		range.world->tick(1 / 30.0f);
+	}
+	CHECK(range.world->playerWeapon()->roundsInMag() == 0);
+	CHECK(!range.world->playerWeapon()->reloading());
+	CHECK(range.world->projectiles().size() == 1);
+	if (!range.world->projectiles().empty()) {
+		const game::Projectile& round = range.world->projectiles().front();
+		CHECK(!round.wireLost);
+		CHECK(std::atan2(round.velocity.x, round.velocity.z) > 0.1f); // still steered
+	}
+	for (int i = 0; i < 60; ++i) {
+		range.world->tick(1 / 30.0f); // the round expires, then the reload runs
+	}
+	CHECK(range.world->playerWeapon()->roundsInMag() == 1);
 }

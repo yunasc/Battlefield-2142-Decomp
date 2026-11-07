@@ -1845,6 +1845,28 @@ void LevelRenderer::syncObjects()
 		return;
 	}
 	const world::ObjectManager& objects = m_sources->objects;
+	// These have no ObjectManager identity: recreate them from the round's
+	// current projectile states so expiry, seeking and remote ghost corrections
+	// immediately change what is submitted to the renderer.
+	m_instances.erase(std::remove_if(m_instances.begin(), m_instances.end(),
+					  [](const Instance& instance) { return instance.transient; }),
+		m_instances.end());
+	if (m_sources->transientModels) {
+		std::vector<TransientModel> models;
+		m_sources->transientModels(models);
+		for (const TransientModel& model : models) {
+			if (!model.objectTemplate || model.objectTemplate->geometry().empty()) {
+				continue;
+			}
+			const size_t first = m_instances.size();
+			const Mat4 world = objectTransform(model.position, model.rotation);
+			addTemplate(*m_sources, *model.objectTemplate, Mat4 {}, world, 0, 0);
+			for (size_t i = first; i < m_instances.size(); ++i) {
+				m_instances[i].transient = true;
+				m_instances[i].objectOrigin = {model.position.x, model.position.y, model.position.z};
+			}
+		}
+	}
 	// Drop what belongs to removed objects.
 	m_instances.erase(std::remove_if(m_instances.begin(), m_instances.end(),
 						  [&objects](const Instance& instance) {
@@ -3983,6 +4005,8 @@ void LevelRenderer::draw(SDL_GPUCommandBuffer* commands, SDL_GPUTexture* color, 
 	// The lighting level's bundled and skinned meshes (QualitySettings).
 	const bool hemiAndShadows = !m_sources || !m_sources->quality || m_sources->quality->meshHemiAndShadows();
 	const GpuMesh* bound = nullptr;
+	bool culling = false;
+	const uint32_t inside = m_sources && m_sources->cockpitVehicle ? m_sources->cockpitVehicle() : 0;
 	const auto drawInstance = [&](const DrawItem& item, MeshQueue queue) {
 		const Instance& instance = *item.instance;
 		bool any = false;
@@ -4003,6 +4027,16 @@ void LevelRenderer::draw(SDL_GPUCommandBuffer* commands, SDL_GPUTexture* color, 
 		}
 		if (!any) {
 			return;
+		}
+		// The occupant's own exterior hull (the gunner's cockpitSubGeom 1):
+		// back faces culled, or the view is inside the hull's far side. Wrecks,
+		// crew kits and dropped kits (also geometry 1) stay two-sided.
+		if (queue == MeshQueue::Opaque) {
+			const bool cull = instance.shownGeometry == 1 && inside != 0 && instance.object == inside;
+			if (cull != culling) {
+				culling = cull;
+				SDL_BindGPUGraphicsPipeline(pass, cull ? m_gpu.meshCulledPipeline() : m_gpu.meshPipeline());
+			}
 		}
 		if (item.mesh != bound) {
 			bound = item.mesh;
@@ -4115,6 +4149,9 @@ void LevelRenderer::draw(SDL_GPUCommandBuffer* commands, SDL_GPUTexture* color, 
 	};
 	for (const DrawItem& item : m_drawList) {
 		drawInstance(item, MeshQueue::Opaque);
+	}
+	if (culling) {
+		SDL_BindGPUGraphicsPipeline(pass, m_gpu.meshPipeline());
 	}
 	// Decals over the opaque surfaces.
 	if (m_decalVertices && !m_decalGroups.empty()) {
