@@ -529,9 +529,20 @@ TEST(MenuBindings_InstantAction)
 	menu.run(0.2);
 
 	CHECK(menu.text(rows + "row0.cell0.text") != "Belgrade - 16");
+	// The scroll bar's thumb follows: a fraction of its track, not pinned to the bottom
+	// (the list's scroll natives answer the position as a fraction of the scrollable rows).
+	const std::string pane = "singleplay.mc_singleplayer.mcMapsAvailable.";
+	const auto thumb = [&] {
+		const double top = std::stod(menu.text(pane + "m_dragTop")), length = std::stod(menu.text(pane + "iScrollableLength"));
+		return (std::stod(menu.text(pane + "m_mcScrollVertical.slider._y")) - top) / length;
+	};
+	const double scrolled = thumb();
+	CHECK(scrolled > 0.0 && scrolled < 0.5); // 3 rows of 25 (about 12 shown)
 	menu.player.mouseWheel(30);
 	menu.run(0.2);
 	CHECK(menu.text(rows + "row0.cell0.text") == "Belgrade - 16");
+	CHECK(thumb() == 0.0);
+	std::fprintf(stderr, "scrollbar thumb after 3 rows: %.3f, back at the top: %.3f\n", scrolled, thumb());
 	CHECK(menu.click(rows + "row0"));
 	CHECK(menu.click("singleplay.mc_singleplayer.btnInstantAction"));
 	menu.run(1);
