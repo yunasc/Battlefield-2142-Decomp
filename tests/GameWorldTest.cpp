@@ -193,6 +193,32 @@ TEST(GameWorld_SoldiersShootAndDie)
 	CHECK(range.count("PlayerDeath") == 1 && range.count("PlayerSpawn") == 3);
 }
 
+TEST(GameWorld_InitialDeploymentJoinsWithoutDeathThenSpawnsAtChoice)
+{
+	Range range;
+	const int local = range.world->joinPlayer(2);
+	CHECK(local == range.world->localPlayer());
+	game::GameWorld::PlayerInfo info;
+	CHECK(range.world->playerInfo(local, info) && !info.alive && info.team == 2 && info.deaths == 0);
+	CHECK(range.world->playerObject() == 0);
+	CHECK(range.count("PlayerDeath") == 0 && range.count("PlayerSpawn") == 0);
+	for (int i = 0; i < 90; ++i) range.world->tick(1 / 30.0f);
+	CHECK(range.world->playerInfo(local, info) && !info.alive && info.deaths == 0);
+	CHECK(range.count("PlayerDeath") == 0 && range.count("PlayerSpawn") == 0);
+
+	range.world->setKit(local, "EU_Assault", "us_light_soldier");
+	range.world->setSpawnChoice(local, 2);
+	CHECK(range.world->spawnSoldier(local));
+	CHECK(range.world->playerInfo(local, info) && info.alive && info.deaths == 0);
+	CHECK(range.world->spawnChoice(local) == 2);
+	CHECK(range.count("PlayerDeath") == 0 && range.count("PlayerSpawn") == 1);
+	// Reusing spawnPlayer for an already living local player must not
+	// change its team behind the team-change permission checks.
+	const auto soldier = range.world->playerObject();
+	CHECK(range.world->spawnPlayer(1)->id() == soldier);
+	CHECK(range.world->playerTeam() == 2);
+}
+
 // Team damage on a soldier (TeamDamage.cpp: 0x006557a0, 0x004c0e40): a
 // teammate's damage reaching teamDamageScoreLimit (50 %) of the victim's
 // maximum while he stands (the second 40 of 100) raises
@@ -485,6 +511,60 @@ TEST(GameWorld_WeaponSwitching)
 	range.world->setPlayerInput(input);
 	range.world->tick(1 / 30.0f);
 	CHECK(held() == "eu_ar_rifle" && range.world->playerWeapon()->roundsInMag() == rifleRounds);
+}
+
+TEST(GameWorld_ProfileAutoReload)
+{
+	Range range;
+	range.templates.registerType(6, "Kit");
+	world::ObjectTemplate* rifle = range.templates.find("eu_ar_rifle");
+	rifle->settings()["itemIndex"] = "3";
+	rifle->settings()["ammo.magSize"] = "1";
+	rifle->settings()["ammo.nrOfMags"] = "2";
+	rifle->settings()["ammo.reloadTime"] = "0.1";
+	world::ObjectTemplate* kit = range.templates.create("Kit", "EU_Assault");
+	kit->children().push_back({"eu_ar_rifle", {}, {}});
+	CHECK(range.world->spawnPlayer(2) != nullptr);
+	range.world->setAutoReload(true);
+	const int mags = range.world->playerWeapon()->magsLeft();
+
+	game::SoldierInput fire;
+	fire.fire = true;
+	range.world->setPlayerInput(fire);
+	range.world->tick(1 / 30.0f); // last round
+	CHECK(range.world->playerWeapon()->roundsInMag() == 0);
+	range.world->setPlayerInput({}); // releasing immediately still reloads
+	range.world->tick(1 / 30.0f);
+	CHECK(range.world->playerWeapon()->reloading());
+	for (int i = 0; i < 8; ++i) range.world->tick(1 / 30.0f);
+	CHECK(!range.world->playerWeapon()->reloading());
+	CHECK(range.world->playerWeapon()->roundsInMag() == 1);
+	CHECK(range.world->playerWeapon()->magsLeft() == mags - 1);
+
+	// With no spare magazine, a held trigger cannot restart reloads per tick.
+	game::SoldierInput held;
+	held.fire = true;
+	range.world->setPlayerInput(held);
+	range.world->tick(1 / 30.0f);
+	CHECK(range.world->playerWeapon()->roundsInMag() == 0);
+	for (int i = 0; i < 30; ++i) range.world->tick(1 / 30.0f);
+	CHECK(!range.world->playerWeapon()->reloading());
+	CHECK(range.world->playerWeapon()->roundsInMag() == 0);
+
+	// Negative reserve counts mean unlimited magazines, not no ammunition.
+	Range infinite;
+	auto* unlimited = infinite.templates.find("eu_ar_rifle");
+	unlimited->settings()["ammo.magSize"] = "1";
+	unlimited->settings()["ammo.nrOfMags"] = "-1";
+	unlimited->settings()["ammo.reloadTime"] = "0.1";
+	CHECK(infinite.world->spawnPlayer(2) != nullptr);
+	infinite.world->setAutoReload(true);
+	infinite.world->setPlayerInput(fire);
+	infinite.world->tick(1 / 30.0f);
+	infinite.world->setPlayerInput({});
+	for (int i = 0; i < 12; ++i) infinite.world->tick(1 / 30.0f);
+	CHECK(infinite.world->playerWeapon()->roundsInMag() == 1);
+	CHECK(infinite.world->playerWeapon()->magsLeft() < 0);
 }
 
 TEST(GameWorld_GadgetsHealAndResupply)
