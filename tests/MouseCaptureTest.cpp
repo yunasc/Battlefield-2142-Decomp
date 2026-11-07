@@ -34,3 +34,14 @@ TEST(Viewer_MouseCaptureRefreshesWhenSdlStateIsStale)
 	// Half-applied state (relative on, grab off) is completed.
 	CHECK(mouseCaptureNeedsAcquire(true, true, false));
 }
+
+TEST(MouseCapture_DriverPitchIsNotPinnedBySoldierLimit)
+{
+	using dice::hfe::clampLookPitch;
+	CHECK(clampLookPitch(5.0f, false, false) == 1.0f && clampLookPitch(-5.0f, false, false) == -1.2f);
+	// Holding mouse-up far past the soldier limit and then reversing still moves the aim.
+	float pitch = clampLookPitch(5.0f, false, true);
+	CHECK(pitch == 5.0f);
+	CHECK(clampLookPitch(pitch + 0.1f, false, true) - pitch > 0.09f);
+	CHECK(clampLookPitch(pitch - 0.1f, false, true) - pitch < -0.09f);
+}

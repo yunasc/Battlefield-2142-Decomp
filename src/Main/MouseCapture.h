@@ -23,4 +23,14 @@ constexpr bool mouseCaptureNeedsAcquire(bool wanted, bool relative, bool grabbed
 	return wanted && (!relative || !grabbed);
 }
 
+// The soldier's aim pitch is clamped (85 degrees first person), but a driver's
+// PIPitch/PIMouseLookY is the per-tick change of that pitch, so a clamp pinned
+// at one end swallows the mouse in that direction. Driving only bounds the sum.
+constexpr float clampLookPitch(float pitch, bool firstPerson, bool driving)
+{
+	const float low = driving ? -1000.0f : firstPerson ? -1.4835f : -1.2f;
+	const float high = driving ? 1000.0f : firstPerson ? 1.4835f : 1.0f;
+	return pitch < low ? low : pitch > high ? high : pitch;
+}
+
 } // namespace dice::hfe

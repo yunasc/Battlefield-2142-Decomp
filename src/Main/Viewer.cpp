@@ -449,6 +449,7 @@ int interactive(const render::LevelSources& sources, const ViewerOptions& option
 		}
 		float pitch = -0.2f;
 		float turn = 0;
+		bool drivingNow = false; // last frame's seat: a driver's mouse pitch is not clamped like a soldier's
 		float wheelSteps = 0; // the mouse wheel in play (IDAxis_2), since the last input
 		// The game controllers, opened as SDL reports them.
 		std::unique_ptr<input::SdlGameControllers> sdlControllers;
@@ -605,8 +606,7 @@ int interactive(const render::LevelSources& sources, const ViewerOptions& option
 					const float up = options.invertMouse && options.invertMouse() ? -1.0f : 1.0f;
 					turn += event.motion.xrel * 0.15f * scale;
 					// First person looks up and down to 85 degrees (0x005890a0).
-					const float low = firstPerson ? -1.4835f : -1.2f, high = firstPerson ? 1.4835f : 1.0f;
-					pitch = std::fmax(low, std::fmin(high, pitch - event.motion.yrel * 0.003f * scale * up));
+					pitch = clampLookPitch(pitch - event.motion.yrel * 0.003f * scale * up, firstPerson, drivingNow);
 				} else if (event.type == SDL_EVENT_MOUSE_MOTION && (event.motion.state & SDL_BUTTON_RMASK)) {
 					camera.yaw += event.motion.xrel * 0.004f;
 					camera.pitch = std::fmax(-1.5f, std::fmin(1.5f, camera.pitch - event.motion.yrel * 0.004f));
@@ -703,6 +703,8 @@ int interactive(const render::LevelSources& sources, const ViewerOptions& option
 				down.seconds = dt;
 				ViewerOptions::PlayerView view;
 				const bool driving = options.playerView && options.playerView(view) && view.driving;
+				if (drivingNow && !driving) pitch = clampLookPitch(pitch, firstPerson, false);
+				drivingNow = driving;
 				if (options.takeAimKick) {
 					const float low = firstPerson ? -1.4835f : -1.2f, high = firstPerson ? 1.4835f : 1.0f;
 					pitch = std::fmax(low, std::fmin(high, pitch + options.takeAimKick() / 57.29578f));
