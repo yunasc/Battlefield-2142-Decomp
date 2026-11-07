@@ -771,7 +771,7 @@ private:
 		SDL_GPUTexture* texture;
 		uint32_t firstVertex;
 		uint32_t vertexCount;
-		int blend[2] = {0, 0}; // HudQuad::blend (D3DBLEND source, destination)
+		int blend[2] = {0, 0}; // HudQuad::blend (Meme source, destination)
 	};
 	SDL_GPUBuffer* m_overlayVertices = nullptr;
 	// The menu layer: its triangles by texture, and the textures of images

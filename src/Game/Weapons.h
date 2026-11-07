@@ -495,6 +495,8 @@ public:
 
 	const FireArmSettings& settings() const { return m_settings; }
 	int roundsInMag() const { return m_rounds; }
+	// A real round leaving this tick, including weapons with unlimited ammo.
+	bool firedThisTick() const { return m_firedThisTick; }
 	int magsLeft() const { return m_mags; }
 	bool reloading() const { return m_reloadLeft > 0; }
 	// A thrown round on its way out (ThrownFireComp states 2 and 3).
@@ -614,6 +616,7 @@ private:
 	int m_startDelay = -1;   // fireStartDelay's ticks left (-1: none pending)
 	Random m_startRandom {0xcfb}; // 0x005f1650's draws (its seed: the owner's +0x214 or the time, + 0xcfb)
 	bool m_pending = false; // a press waiting for the gun
+	bool m_firedThisTick = false;
 	bool m_clicked = false; // a press on an empty magazine (takeClick)
 	int m_burstLeft = 0;
 	int m_launchIn = -1;   // a thrown round's ticks to go (states 2 and 3), -1 none

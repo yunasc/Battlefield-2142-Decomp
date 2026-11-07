@@ -269,7 +269,7 @@ public:
 										 : m_uiPipeline;
 	}
 	// The HUD with the blend factors of a HudBuilder.addNodeBlendEffect
-	// (Direct3D 9 D3DBLEND values, 1 ZERO .. 11 SRCALPHASAT, for colour and
+	// (Meme values, translated to Direct3D/SDL by HudBlend.h, for colour and
 	// alpha alike; 0 0 is uiPipeline()'s SRCALPHA / INVSRCALPHA), made the
 	// first time a pair is asked for. Null when the pair can't be built.
 	SDL_GPUGraphicsPipeline* uiBlendPipeline(int source, int destination);
