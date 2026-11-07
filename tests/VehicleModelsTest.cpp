@@ -18,6 +18,7 @@
 #include "Physics/MaterialManager.h"
 #include "Main/HudWorld.h"
 #include "Main/PlayerCamera.h"
+#include "Net/RemoteInput.h"
 #include "Render/PostProduction.h"
 #include "TestMain.h"
 #include "World/Object.h"
@@ -568,6 +569,91 @@ TEST(Vehicles_GunshipFlies)
 	std::fprintf(stderr, "  as_ag: %.1f m up, %.1f m ahead after 5 s\n", p.y - rest.y, p.z - rest.z);
 	CHECK(p.y - rest.y > 5);
 	CHECK(p.z - rest.z > 10);
+}
+
+// A gunship's pilot pitches up and down at comparable rates (the report:
+// "can pitch down, can't pitch up"): from a hover, held pitch keys and a
+// sustained mouse stream each way.
+TEST(Vehicles_GunshipPitchesBothWays)
+{
+	if (!gameDir()) {
+		return;
+	}
+	for (const char* mod : {"mods/bf2142", "mods/Project_Remaster_v17_Final"}) {
+		for (const char* name : {"as_ag", "us_ag"}) {
+			for (int mode = 0; mode < 4; ++mode) {
+				Garage g(gameDir(), mod);
+				if (!g.loaded || !g.templates.find(name)) {
+					continue;
+				}
+				const uint32_t ag = g.start(name, {0, 3, 8});
+				if (!g.enter(ag)) {
+					continue;
+				}
+				game::SoldierInput lift;
+				lift.throttle = 1;
+				g.drive(lift, 4);
+				g.drive({}, 3);
+				// mode 0/1: ArrowDown (-1, nose up) / ArrowUp (+1); 2/3: mouse up / down.
+				const float dir = mode % 2 == 0 ? 1.0f : -1.0f; // +1 = nose up
+				float aim = 0;
+				float peak = 0, peakRate = 0;
+				const auto pitchOf = [&] {
+					for (const auto& info : g.world->vehicleList()) {
+						if (info.object == ag) {
+							return std::pair<float, float> {std::asin(std::clamp(info.forward.y, -1.0f, 1.0f)) * 57.29578f,
+								info.angularVelocity.x * info.right.x + info.angularVelocity.y * info.right.y + info.angularVelocity.z * info.right.z};
+						}
+					}
+					return std::pair<float, float> {};
+				};
+				const float start = pitchOf().first;
+				for (int i = 0; i < 60; ++i) {
+					game::SoldierInput in;
+					if (mode < 2) {
+						in.pitchAxis = -dir;
+					} else {
+						aim += dir * 4.0f; // degrees a tick, up positive
+						in.aimPitch = aim;
+					}
+					g.world->setPlayerInput(in);
+					g.world->tick(1 / 30.0f);
+					const auto [angle, rate] = pitchOf();
+					if (std::fabs(angle - start) > std::fabs(peak)) peak = angle - start;
+					peakRate = std::max(peakRate, std::fabs(rate));
+					if (i % 10 == 9) {
+						std::fprintf(stderr, "    %s %s mode %d t=%.1f pitch %.2f rate %.3f\n", mod, name, mode, (i + 1) / 30.0f, angle - start, rate);
+					}
+				}
+				std::fprintf(stderr, "  %s %s mode %d: peak %.2f deg, peak rate %.3f rad/s\n", mod, name, mode, peak, peakRate);
+				CHECK(peak * dir > 3);
+			}
+		}
+	}
+}
+
+// The remote path (client -> PlayerMove -> server/prediction): a driver's
+// PIPitch is the mouse's change, so a pilot who keeps pulling the mouse up
+// (the hull fights back) must not run out of pitch input. The server's
+// clamped aim pitch (+-89) swallowed every further pull up while pulls down
+// still worked: "can pitch down, can't pitch up".
+TEST(Vehicles_RemoteMouseKeepsPitchingUp)
+{
+	for (const float dir : {1.0f, -1.0f}) { // +1: mouse up (nose up)
+		net::MoveInputState state;
+		float aim = 0, last = 0, lastLook = 0, early = 0, late = 0;
+		for (int i = 0; i < 120; ++i) {
+			game::SoldierInput in;
+			in.aimPitch = aim += dir * 2.0f;
+			const game::SoldierInput seen = net::soldierInputFromMove(net::playerInputFrom(in, last).toMove(i), state);
+			last = in.aimPitch;
+			const float driven = game::GameWorld::driverInput(seen, 1, lastLook).pitch;
+			lastLook = seen.aimPitch;
+			(i == 5 ? early : late) = -driven * dir; // nose-up positive in the direction pulled
+		}
+		std::fprintf(stderr, "  remote mouse stream dir %+.0f: pitch input early %.3f, after 120 ticks %.3f\n", dir, early, late);
+		CHECK(late > 0.9f * early && early > 0.2f);
+	}
 }
 
 // A recoil graph with a large exponent (eu_sni's) stays finite: the
