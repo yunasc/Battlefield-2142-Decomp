@@ -765,6 +765,68 @@ TEST(Titan_BotsChooseCapturableSilos)
 	if (!mesh) {
 		return;
 	}
+	std::fprintf(stderr, "SILO_MESH mod=vanilla version=%u clusterVersion=%u polys=%zu bounds=%.1f/%.1f..%.1f/%.1f\n",
+		mesh->version, mesh->clusterVersion, mesh->polygons.size(), mesh->minX, mesh->minZ, mesh->maxX, mesh->maxZ);
+	for (const auto& silo : level.world->missileSilos()) {
+		for (const auto& cp : level.world->controlPointList()) {
+			if (cp.id != silo.controlPoint) continue;
+			float nearest = 1e9f;
+			physics::Vec3 nearestAt;
+			int valid = 0;
+			for (float x = -100; x <= 100; x += 1.0f) {
+				for (float z = -100; z <= 100; z += 1.0f) {
+					physics::Vec3 at = cp.position + physics::Vec3{x, 0, z};
+					at.y = level.world->terrainHeight(at.x, at.z) + 1.0f;
+					if (mesh->findPolygon({at.x, at.y, at.z}) >= 0) {
+						if (x*x + z*z <= cp.radius*cp.radius) ++valid;
+						const float d = x*x + z*z;
+						if (d < nearest) { nearest = d; nearestAt = at; }
+					}
+				}
+			}
+			float startNearest = 1e9f;
+			physics::Vec3 startAt;
+			const physics::Vec3 spawn {552.0f, 55.0f, -262.0f};
+			for (float x = -100; x <= 100; x += 1.0f) {
+				for (float z = -100; z <= 100; z += 1.0f) {
+					physics::Vec3 at = spawn + physics::Vec3{x, 0, z};
+					at.y = level.world->terrainHeight(at.x, at.z) + 1.0f;
+					if (mesh->findPolygon({at.x, at.y, at.z}) >= 0 && x*x + z*z < startNearest) {
+						startNearest = x*x + z*z;
+						startAt = at;
+					}
+				}
+			}
+			const std::vector<ai::Vec3> path = nearest < 1e8f && startNearest < 1e8f
+				? ai::findPath(*mesh, {startAt.x, startAt.y, startAt.z}, {nearestAt.x, nearestAt.y, nearestAt.z})
+				: std::vector<ai::Vec3> {};
+			const physics::Vec3 eyeStart = startAt + physics::Vec3 {0, 1.5f, 0};
+			const physics::Vec3 eyeGoal = nearestAt + physics::Vec3 {0, 1.5f, 0};
+			std::fprintf(stderr, "SILO_NAV cp=%d team=%d radius=%.1f centerpoly=%d inRadius=%d nearest=%.2f at=%.2f/%.2f/%.2f spawnNearest=%.2f at=%.2f/%.2f/%.2f path=%zu los=%d\n", cp.id, cp.team,
+				cp.radius, mesh->findPolygon({cp.position.x, cp.position.y, cp.position.z}), valid, std::sqrt(nearest), nearestAt.x, nearestAt.y, nearestAt.z,
+				std::sqrt(startNearest), startAt.x, startAt.y, startAt.z, path.size(), level.world->lineOfSight(eyeStart, eyeGoal, silo.object));
+		}
+	}
+	{
+		TitanLevel remaster(gameDir, "Suez_Canal", 48, true, "mods/Project_Remaster_v17_Final");
+		std::vector<uint8_t> rq, rc;
+		CHECK(remaster.files.readFile("Levels/Suez_Canal/AIPathFinding/Infantry.qtr", rq));
+		CHECK(remaster.files.readFile("Levels/Suez_Canal/AIPathFinding/Infantry.clb", rc));
+		const auto rm = ai::parseNavMesh(rq, rc);
+		CHECK(rm.has_value());
+		if (rm) {
+			std::fprintf(stderr, "SILO_MESH mod=remaster version=%u clusterVersion=%u polys=%zu bounds=%.1f/%.1f..%.1f/%.1f\n",
+				rm->version, rm->clusterVersion, rm->polygons.size(), rm->minX, rm->minZ, rm->maxX, rm->maxZ);
+			for (const auto& silo : remaster.world->missileSilos()) {
+				for (const auto& cp : remaster.world->controlPointList()) {
+					if (cp.id == silo.controlPoint) {
+						std::fprintf(stderr, "SILO_REM cp=%d centerpoly=%d radius=%.1f\n", cp.id,
+							rm->findPolygon({cp.position.x, cp.position.y, cp.position.z}), cp.radius);
+					}
+				}
+			}
+		}
+	}
 	game::BotManager bots(*level.world, {});
 	bots.setNavMesh(&*mesh);
 	const int id = level.world->addPlayer("SiloBot", 2, true);
@@ -793,6 +855,98 @@ TEST(Titan_BotsChooseCapturableSilos)
 		}
 	}
 	CHECK(siloTarget);
+}
+
+TEST(Titan_VanillaSiloApproachDiagnostic)
+{
+	const char* gameDir = std::getenv("BF2142_GAME_DIR");
+	if (!gameDir) return;
+	TitanLevel level(gameDir, "Suez_Canal", 48, true, nullptr, true);
+	if (!level.loaded) return;
+	std::vector<uint8_t> qtr, clb;
+	CHECK(level.files.readFile("Levels/Suez_Canal/AIPathFinding/Infantry.qtr", qtr));
+	CHECK(level.files.readFile("Levels/Suez_Canal/AIPathFinding/Infantry.clb", clb));
+	const auto mesh = ai::parseNavMesh(qtr, clb);
+	CHECK(mesh.has_value());
+	if (!mesh) return;
+	const auto points = level.world->controlPointList();
+	const auto cp = std::find_if(points.begin(), points.end(), [](const auto& p) { return p.id == 906; });
+	CHECK(cp != points.end());
+	if (cp == points.end()) return;
+	float nearest2 = 1e9f;
+	physics::Vec3 from;
+	for (float x = -120; x <= 120; x += 1) {
+		for (float z = -120; z <= 120; z += 1) {
+			const float d2 = x*x + z*z;
+			if (d2 >= nearest2) continue;
+			physics::Vec3 at = cp->position + physics::Vec3{x, 0, z};
+			at.y = level.world->terrainHeight(at.x, at.z) + 1;
+			if (mesh->findPolygon({at.x, at.y, at.z}) >= 0) { nearest2 = d2; from = at; }
+		}
+	}
+	CHECK(nearest2 < 1e9f);
+	if (nearest2 >= 1e9f) return;
+	game::BotManager bots(*level.world, {});
+	bots.setNavMesh(&*mesh);
+	const int id = level.world->addPlayer("Silo approach", 2, true);
+	CHECK(level.world->spawnSoldier(id));
+	game::GameWorld::PlayerInfo info;
+	CHECK(level.world->playerInfo(id, info));
+	CHECK(level.world->setSoldierPosition(info.soldier, from));
+	for (int tick = 0; tick < 30 * 120; ++tick) {
+		bots.update(1 / 30.0f);
+		level.world->tick(1 / 30.0f);
+	}
+	level.world->playerInfo(id, info);
+	float cpDistance = std::sqrt((info.position.x - cp->position.x)*(info.position.x - cp->position.x)
+		+ (info.position.z - cp->position.z)*(info.position.z - cp->position.z));
+	int cpTeam = 0;
+	for (const auto& p : level.world->controlPointList()) if (p.id == cp->id) cpTeam = p.team;
+	std::fprintf(stderr, "SILO_APPROACH id=%d team=%d start=%.1f/%.1f/%.1f startGap=%.1f end=%.1f/%.1f/%.1f gap=%.1f cpTeam=%d behavior=%s staticTriangles=%zu\n",
+		id, info.team, from.x, from.y, from.z, std::sqrt(nearest2), info.position.x, info.position.y, info.position.z,
+		cpDistance, cpTeam, bots.behaviour(id).c_str(), level.world->staticCollision().triangles());
+}
+
+TEST(Titan_VanillaPhysicsWithFullFootprintNavMesh)
+{
+	const char* gameDir = std::getenv("BF2142_GAME_DIR");
+	if (!gameDir) return;
+	TitanLevel vanilla(gameDir, "Suez_Canal", 48, true, nullptr, true);
+	TitanLevel remaster(gameDir, "Suez_Canal", 48, true, "mods/Project_Remaster_v17_Final", false);
+	CHECK(vanilla.loaded && remaster.loaded);
+	if (!vanilla.loaded || !remaster.loaded) return;
+	std::vector<uint8_t> qtr, clb;
+	CHECK(remaster.files.readFile("Levels/Suez_Canal/AIPathFinding/Infantry.qtr", qtr));
+	CHECK(remaster.files.readFile("Levels/Suez_Canal/AIPathFinding/Infantry.clb", clb));
+	const auto mesh = ai::parseNavMesh(qtr, clb);
+	CHECK(mesh.has_value());
+	if (!mesh) return;
+	game::BotManager bots(*vanilla.world, {});
+	bots.setNavMesh(&*mesh);
+	const int id = vanilla.world->addPlayer("Full mesh approach", 2, true);
+	CHECK(vanilla.world->spawnSoldier(id));
+	game::GameWorld::PlayerInfo info;
+	CHECK(vanilla.world->playerInfo(id, info));
+	physics::Vec3 at {552.3f, 0, -306.9f};
+	at.y = vanilla.world->terrainHeight(at.x, at.z) + 1;
+	CHECK(vanilla.world->setSoldierPosition(info.soldier, at));
+	bots.update(1 / 30.0f);
+	const auto route = bots.route(id);
+	std::fprintf(stderr, "SILO_FULL_MESH start=%.1f/%.1f/%.1f poly=%d routeEnd=%.1f/%.1f/%.1f routePoly=%d static=%zu\n",
+		at.x, at.y, at.z, mesh->findPolygon({at.x, at.y, at.z}), route.empty() ? 0 : route.back().x,
+		route.empty() ? 0 : route.back().y, route.empty() ? 0 : route.back().z,
+		route.empty() ? -1 : mesh->findPolygon({route.back().x, route.back().y, route.back().z}), vanilla.world->staticCollision().triangles());
+	for (int tick = 0; tick < 30 * 180; ++tick) {
+		bots.update(1 / 30.0f);
+		vanilla.world->tick(1 / 30.0f);
+	}
+	vanilla.world->playerInfo(id, info);
+	int team906 = -1;
+	for (const auto& p : vanilla.world->controlPointList()) if (p.id == 906) team906 = p.team;
+	const float gap = std::sqrt((info.position.x - 263.556f)*(info.position.x - 263.556f)
+		+ (info.position.z + 181.114f)*(info.position.z + 181.114f));
+	std::fprintf(stderr, "SILO_FULL_MESH end=%.1f/%.1f/%.1f gap906=%.1f team906=%d behavior=%s\n",
+		info.position.x, info.position.y, info.position.z, gap, team906, bots.behaviour(id).c_str());
 }
 
 // 0x004bbf60's tail / 0x006f2b00: a PAC soldier inside EU's Titan's

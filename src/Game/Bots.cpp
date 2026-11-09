@@ -6919,6 +6919,25 @@ ai::SidestepSense BotManager::sidestepSense(const Bot& bot, const physics::Vec3&
 bool BotManager::steer(Bot& bot, const GameWorld::PlayerInfo& self, const physics::Vec3& to, int goalId, float seconds,
 	SoldierInput& input, float radius, uint32_t object)
 {
+	const char* traceBot = std::getenv("BF2142_BOT_TRACE_ID");
+	static std::map<int, float> tracedAt;
+	const auto [traceAt, insertedTrace] = tracedAt.emplace(self.id, -5.0f);
+	const auto trace = [&] {
+		if (!traceBot || (traceBot[0] != '*' && std::atoi(traceBot) != self.id) || (!insertedTrace && m_time - traceAt->second < 5.0f)) {
+			return;
+		}
+		traceAt->second = m_time;
+		const auto& waypoints = bot.follower.waypoints();
+		const ai::Vec3 next = waypoints.empty() ? ai::Vec3 {} : waypoints[std::min(bot.follower.current(), waypoints.size() - 1)].p;
+		std::fprintf(stderr, "BOT_TRACE t=%.1f id=%d behavior=%s pos=%.2f/%.2f/%.2f poly=%d vel=%.2f/%.2f/%.2f yaw=%.1f goal=%.2f/%.2f/%.2f goalpoly=%d move=%.2f/%.2f/%.2f path=%d/%d failed=%d remaining=%.2f wp=%.2f/%.2f/%.2f input=%.2f/%.2f\n",
+			m_time, self.id, bot.behaviour.c_str(), self.position.x, self.position.y, self.position.z,
+			m_navMesh ? m_navMesh->findPolygon(toAi(self.position)) : -1,
+			self.velocity.x, self.velocity.y, self.velocity.z, self.yaw, bot.goal.x, bot.goal.y, bot.goal.z,
+			m_navMesh ? m_navMesh->findPolygon(toAi(bot.goal)) : -1,
+			to.x, to.y, to.z, static_cast<int>(bot.follower.current()), static_cast<int>(waypoints.size()),
+			bot.follower.failed(), bot.follower.remaining(toAi(self.position)), next.x, next.y, next.z,
+			input.throttle, input.strafe);
+	};
 	bot.pitch = 0;
 	input.aimPitch = 0;
 	// The jump: PIAction (input 9) pressed by the follower's tick (0x10095720,
@@ -6997,6 +7016,7 @@ bool BotManager::steer(Bot& bot, const GameWorld::PlayerInfo& self, const physic
 		input.strafe = root(side) * bot.walkFactor;
 		bot.zoomPress = bot.zoom.level() > 0 && !bot.zoomKey;
 		bot.follower.progress(toAi(self.position), std::fabs(input.throttle) + std::fabs(input.strafe), m_time);
+		trace();
 		return true;
 	}
 	// The member's speed over the soldier's (0x100e6060): the squad's
@@ -7011,6 +7031,7 @@ bool BotManager::steer(Bot& bot, const GameWorld::PlayerInfo& self, const physic
 	aim(bot, self, eye + d * 5.0f, {}, false, {}, input, seconds);
 	bot.look.quiet = false;
 	bot.follower.progress(toAi(self.position), std::fabs(input.throttle), m_time);
+	trace();
 	return true;
 }
 
