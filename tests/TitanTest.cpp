@@ -1197,22 +1197,25 @@ TEST(Titan_HeldGunshipReleasesIntactRemaster)
 struct BridgeCrossing {
 	float x, z, yaw, deckY;
 	float from = 55, to = 40; // metres before the middle to start at, after it to reach
+	float lateral = 0;        // metres to the right of the bridge's axis (the lane)
 };
 
-static void walkerCrossesBridge(const char* mod, const char* tmpl, const BridgeCrossing& bridge, bool sprint)
+struct WalkResult {
+	bool entered = false;
+	float along = 0, lowest = 1e9f, hp = 0, hp0 = 0;
+	float stuckAlong = 1e9f, stuckLateral = 0; // where it stopped for over a second short of the far side
+	world::Vec3 stuckAt;
+};
+
+// One walker driven over `bridge` on its lane in an already loaded level; the
+// walker is removed after, so the level serves the whole sweep.
+static WalkResult walkBridge(TitanLevel& level, const char* tmpl, const BridgeCrossing& bridge, bool sprint)
 {
-	const char* gameDir = std::getenv("BF2142_GAME_DIR");
-	if (!gameDir) {
-		return;
-	}
-	TitanLevel level(gameDir, "Suez_Canal", 48, true, mod, true);
-	if (!level.loaded || !level.templates.find(tmpl)) {
-		return;
-	}
+	WalkResult r;
 	const float rad = bridge.yaw * 3.14159265f / 180;
 	const float dx = std::sin(rad), dz = std::cos(rad);
 	const float from = bridge.from; // the approach road, short of the bridge
-	const float x = bridge.x - dx * from, z = bridge.z - dz * from;
+	const float x = bridge.x - dx * from + dz * bridge.lateral, z = bridge.z - dz * from - dx * bridge.lateral;
 	world::Object* walker = level.objects.create(level.templates.find(tmpl), {x, level.world->terrainHeight(x, z) + 6, z}, {bridge.yaw, 0, 0});
 	walker->setTeam(2);
 	level.run(2);
@@ -1230,26 +1233,194 @@ static void walkerCrossesBridge(const char* mod, const char* tmpl, const BridgeC
 	level.world->setInput(player, {});
 	level.run(0.5f);
 	level.world->playerInfo(player, info);
-	CHECK(info.vehicle == walker->id());
+	r.entered = info.vehicle == walker->id();
 	game::SoldierInput drive;
 	drive.throttle = 1;
 	drive.sprint = sprint;
-	float lowestOnDeck = 1e9f, along = -from;
-	const float hp = level.world->hitPoints(walker->id());
-	for (int i = 0; i < static_cast<int>(30 * (from + bridge.to) / 5) && along < bridge.to; ++i) {
+	r.along = -from;
+	r.hp0 = level.world->hitPoints(walker->id());
+	world::Vec3 window[30] = {};
+	for (int i = 0; i < static_cast<int>(30 * (from + bridge.to) / 5) && r.along < bridge.to; ++i) {
 		level.world->setInput(player, drive);
 		level.world->tick(1 / 30.0f);
 		const world::Vec3 p = walker->position();
-		along = (p.x - bridge.x) * dx + (p.z - bridge.z) * dz;
-		if (std::fabs(along) < 15 || bridge.from > 100) {
-			lowestOnDeck = std::min(lowestOnDeck, p.y); // the heightmap is the canal bed far below
+		r.along = (p.x - bridge.x) * dx + (p.z - bridge.z) * dz;
+		if (std::fabs(r.along) < 15 || bridge.from > 100) {
+			r.lowest = std::min(r.lowest, p.y); // the heightmap is the canal bed far below
+		}
+		// Stopped: under 1 m moved in the last second, short of the far side.
+		const world::Vec3 old = window[i % 30];
+		window[i % 30] = p;
+		if (i >= 90 && r.stuckAlong > 1e8f && r.along < bridge.to && std::hypot(p.x - old.x, p.z - old.z) < 1.0f) {
+			r.stuckAlong = r.along;
+			r.stuckAt = p;
 		}
 	}
+	r.hp = level.world->hitPoints(walker->id());
+	level.world->setInput(player, {});
+	level.objects.remove(walker->id());
+	level.run(0.2f);
+	return r;
+}
+
+static void walkerCrossesBridge(const char* mod, const char* tmpl, const BridgeCrossing& bridge, bool sprint)
+{
+	const char* gameDir = std::getenv("BF2142_GAME_DIR");
+	if (!gameDir) {
+		return;
+	}
+	TitanLevel level(gameDir, "Suez_Canal", 48, true, mod, true);
+	if (!level.loaded || !level.templates.find(tmpl)) {
+		return;
+	}
+	const WalkResult r = walkBridge(level, tmpl, bridge, sprint);
+	CHECK(r.entered);
 	std::fprintf(stderr, "  %s %s at %.0f %.0f: %.1f m past the middle, lowest over the span %.1f (deck %.1f), hp %.0f of %.0f\n", mod ? "remaster" : "vanilla",
-		tmpl, bridge.x, bridge.z, along, lowestOnDeck, bridge.deckY, level.world->hitPoints(walker->id()), hp);
-	CHECK(along >= bridge.to);                // across at better than 5 m/s (7.4 walking)
-	CHECK(lowestOnDeck > bridge.deckY + 2.0f); // its feet on the deck (2.8 m under its origin), not in the canal
-	CHECK(level.world->hitPoints(walker->id()) >= hp);
+		tmpl, bridge.x, bridge.z, r.along, r.lowest, bridge.deckY, r.hp, r.hp0);
+	CHECK(r.along >= bridge.to);                // across at better than 5 m/s (7.4 walking)
+	CHECK(r.lowest > bridge.deckY + 2.0f); // its feet on the deck (2.8 m under its origin), not in the canal
+	CHECK(r.hp >= r.hp0);
+}
+
+// The sweep: the Suez bridges both ways across the deck's lanes (the 12 m deck
+// of bridge_industrial_01_c and the big road's two spans, whose joint at x -245
+// was where a walker stopped: the hull's points against the rails and the
+// seam's end faces braked it, which retail's walker response never takes,
+// 0x00854170). Lanes within 6 m of the axis; the vanilla mech in vanilla, the
+// Remaster's in Remaster. WALKER_SWEEP=1 logs every lane to 9 m, both mechs,
+// walking and sprinting, and where each stopped.
+TEST(Titan_WalkerSweepsTheSuezBridges)
+{
+	const char* gameDir = std::getenv("BF2142_GAME_DIR");
+	if (!gameDir) {
+		return;
+	}
+	const bool all = std::getenv("WALKER_SWEEP") != nullptr;
+	struct Span {
+		float x, z, yaw, deckY, from, to;
+	};
+	const Span spans[] = {{65, -36, 90, 47.2f, 55, 40}, {-512, -36, 90, 47.2f, 55, 40}, {-99, -128, 0, 47.2f, 55, 40},
+		{-245, -32, 90, 50.8f, 175, 130}};
+	for (const char* mod : {static_cast<const char*>(nullptr), "mods/Project_Remaster_v17_Final"}) {
+		TitanLevel level(gameDir, "Suez_Canal", 48, true, mod, true);
+		if (!level.loaded) {
+			continue;
+		}
+		for (const char* tmpl : {"us_heavy_mech", "as_heavy_mech"}) {
+			if (!level.templates.find(tmpl) || (!all && (tmpl[0] == 'u') != (mod == nullptr))) {
+				continue;
+			}
+			for (const Span& span : spans) {
+				for (const bool back : {false, true}) {
+					int index = 0;
+					for (const float lane : {-9.0f, -6.0f, -3.0f, 0.0f, 3.0f, 6.0f, 9.0f}) {
+						++index;
+						for (const bool sprint : {false, true}) {
+							if (!all && (std::fabs(lane) > 6 || sprint != (index & 1))) {
+								continue;
+							}
+							BridgeCrossing b {span.x, span.z, span.yaw + (back ? 180.0f : 0.0f), span.deckY, span.from, span.to, lane};
+							const WalkResult r = walkBridge(level, tmpl, b, sprint);
+							const bool crossed = r.along >= span.to && r.lowest > span.deckY + 2.0f;
+							if (all) {
+								std::fprintf(stderr, "SWEEP %s %s span(%.0f,%.0f) %s lane %+.0f %s: along %.1f lowest %.1f %s", mod ? "rem" : "van",
+									tmpl, span.x, span.z, back ? "back" : "fwd", lane, sprint ? "sprint" : "walk", r.along, r.lowest,
+									crossed ? "CROSSED" : "SHORT");
+								if (r.stuckAlong < 1e8f) {
+									std::fprintf(stderr, " stuck at along %.1f pos %.1f %.1f %.1f", r.stuckAlong, r.stuckAt.x, r.stuckAt.y, r.stuckAt.z);
+								}
+								std::fprintf(stderr, "\n");
+							} else {
+								if (!crossed) {
+									std::fprintf(stderr, "  %s %s span(%.0f,%.0f) %s lane %+.0f: along %.1f lowest %.1f stuck at %.1f %.1f %.1f\n",
+										mod ? "rem" : "van", tmpl, span.x, span.z, back ? "back" : "fwd", lane, r.along, r.lowest,
+										r.stuckAt.x, r.stuckAt.y, r.stuckAt.z);
+								}
+								CHECK(crossed);
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// A walker against a prop on level ground: how far along it gets in 8 s.
+static float walkerAgainstProp(const char* prop, float yaw, float sink = 0)
+{
+	const char* gameDir = std::getenv("BF2142_GAME_DIR");
+	if (!gameDir) {
+		return 1e9f;
+	}
+	TitanLevel level(gameDir, "Suez_Canal", 48, false, nullptr, false);
+	if (!level.loaded || !level.templates.find("us_heavy_mech") || !level.templates.find(prop)) {
+		return 1e9f;
+	}
+	// A flat 60 m run along x on the canal's west plain.
+	float fx = 0, fz = 0;
+	bool found = false;
+	for (float z = -400; z < 400 && !found; z += 10) {
+		for (float x = -700; x < 700 && !found; x += 10) {
+			float lo = 1e9f, hi = -1e9f;
+			for (float d = 0; d <= 60; d += 2) {
+				for (float w = -6; w <= 6; w += 6) {
+					const float h = level.world->terrainHeight(x + d, z + w);
+					lo = std::min(lo, h);
+					hi = std::max(hi, h);
+				}
+			}
+			if (hi - lo < 0.05f && lo > 5) {
+				fx = x, fz = z, found = true;
+			}
+		}
+	}
+	CHECK(found);
+	if (!found) {
+		return 1e9f;
+	}
+	const float y = level.world->terrainHeight(fx + 30, fz);
+	level.objects.create(level.templates.find(prop), {fx + 30, y - sink, fz}, {yaw, 0, 0});
+	world::Object* walker = level.objects.create(level.templates.find("us_heavy_mech"), {fx + 2, y + 6, fz}, {90, 0, 0});
+	walker->setTeam(2);
+	level.world->startRound();
+	level.run(2);
+	const int player = level.world->addPlayer("Walker", 2, false);
+	CHECK(level.world->spawnSoldier(player));
+	game::GameWorld::PlayerInfo info;
+	level.world->playerInfo(player, info);
+	level.world->setSoldierPosition(info.soldier, {fx + 3.5f, y, fz});
+	level.run(0.5f);
+	game::SoldierInput use;
+	use.use = true;
+	level.world->setInput(player, use);
+	level.run(0.2f);
+	level.world->setInput(player, {});
+	level.run(0.5f);
+	level.world->playerInfo(player, info);
+	CHECK(info.vehicle == walker->id());
+	game::SoldierInput drive;
+	drive.throttle = 1;
+	for (int i = 0; i < 240; ++i) {
+		level.world->setInput(player, drive);
+		level.world->tick(1 / 30.0f);
+	}
+	return walker->position().x - (fx + 30);
+}
+
+// The legs' sphere (1.5 m at the foot, 0.0x006cec60) decides what a walker meets
+// on an object: a ledge low under the legs is climbed (the contact's push is
+// up), a wall at their height stops it. container_seald_b is 2.6 m of box,
+// sunk 2.2 m into the plain it leaves a 0.4 m ledge (under stepHeight 0.5).
+TEST(Titan_WalkerClimbsALedgeAndStopsAtAWall)
+{
+	const float ledge = walkerAgainstProp("container_seald_b", 0, 2.2f);
+	const float wall = walkerAgainstProp("container_seald_b", 0, 0);
+	std::fprintf(stderr, "  ledge: %.1f m past it, wall: %.1f m\n", ledge, wall);
+	if (ledge < 1e8f) {
+		CHECK(ledge > 20); // over the ledge and on at the free pace (29.7 m)
+		CHECK(wall < 0);   // held short of the wall (it stands at 0)
+	}
 }
 
 TEST(Titan_WalkerCrossesTheSuezBridges)

@@ -785,7 +785,12 @@ physics::MassShares GameWorld::addMeshContact(MeshActor& a, MeshActor& b, const 
 	if (a.body && b.body && a.body->mass < b.body->mass) {
 		a.body->support = b.body->object;
 	}
-	if (shares.velocityA != 0 && a.body && toA) {
+	// A walker's response (vtable 0x9944b8) takes no contact from the mesh
+	// pass: slot 0x2c is a bare `ret 0x18` (0x00854170). Only the legs' own
+	// record (legsSphere, the heightmap) holds it up; the hull's points
+	// against a bridge's rails, a lamp or a seam add nothing to it.
+	const auto walker = [](const Body* body) { return body && body->vehicle && body->vehicle->legs(); };
+	if (shares.velocityA != 0 && a.body && toA && (legs || !walker(a.body))) {
 		// A walker's own contacts are the legs' record (0x006cdad0 into +0x258,
 		// solved by 0x006ce740 with the ground's, which takes the approach out
 		// without friction), not the generic response's: its slot 0x2c is a
@@ -796,7 +801,7 @@ physics::MassShares GameWorld::addMeshContact(MeshActor& a, MeshActor& b, const 
 		}
 		a.body->response.addContact(point - a.position, relative * shares.velocityA, normal, depth * shares.depthA, own);
 	}
-	if (shares.velocityB != 0 && b.body) {
+	if (shares.velocityB != 0 && b.body && !walker(b.body)) {
 		b.body->response.addContact(point - b.position, relative * shares.velocityB, normal, depth * shares.depthB,
 			material);
 	}
