@@ -1659,9 +1659,13 @@ void GameWorld::stepVehicleDamage(float seconds)
 				}
 			}
 		};
-		waterTick(depth > number(t, "armor.waterLevel", 1e9f), body.waterTimer, "armor.waterDamageDelay", 3,
+		// Shipped vehicle templates store the allowed water depth as a signed
+		// offset (commonly -0.3 / -0.7). Compare the positive depth to its
+		// magnitude: using a negative value directly damages vehicles while
+		// their origin is still above the water plane.
+		waterTick(depth > std::fabs(number(t, "armor.waterLevel", 1e9f)), body.waterTimer, "armor.waterDamageDelay", 3,
 			"armor.hpLostWhileInWater");
-		waterTick(depth > number(t, "armor.deepWaterLevel", 1e9f), body.deepWaterTimer, "armor.deepWaterDamageDelay", 1,
+		waterTick(depth > std::fabs(number(t, "armor.deepWaterLevel", 1e9f)), body.deepWaterTimer, "armor.deepWaterDamageDelay", 1,
 			"armor.hpLostWhileInDeepWater");
 		if (body.wreckTime >= 0 || (watered && hitPoints(body.object) <= 0)) {
 			continue; // (only the water's damage can have changed `left`)

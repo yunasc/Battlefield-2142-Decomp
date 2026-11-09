@@ -3915,20 +3915,25 @@ TEST(GameWorld_WaterDamageDelays)
 	makeMobile(*jeep, "jeep_mesh");
 	jeep->children().push_back({"jeep_engine", {}, {}});
 	jeep->settings()["armor.maxHitPoints"] = "100";
-	jeep->settings()["armor.waterLevel"] = "0.5";
-	jeep->settings()["armor.deepWaterLevel"] = "1.5";
+	jeep->settings()["armor.waterLevel"] = "-0.5";
+	jeep->settings()["armor.deepWaterLevel"] = "-1.5";
 	jeep->settings()["armor.hpLostWhileInWater"] = "5";
 	jeep->settings()["armor.hpLostWhileInDeepWater"] = "20";
 	jeep->settings()["armor.deepWaterDamageDelay"] = "0.5";
 	const uint32_t car = range.objects.create(jeep, {0, 1, 3})->id();
 	range.world->startRound();
 	range.world->tick(1 / 30.0f);
-	range.world->setWaterLevel(range.objects.find(car)->position().y + 2);
 	const auto run = [&](float seconds) {
 		for (int i = 0; i < static_cast<int>(seconds * 30 + 0.5f); ++i) {
 			range.world->tick(1 / 30.0f);
 		}
 	};
+	// Shipped templates encode these depths as negative offsets. A dry vehicle
+	// 0.56 m above the water must not take the immediate deep-water damage.
+	range.world->setWaterLevel(range.objects.find(car)->position().y - 0.56f);
+	run(2.1f);
+	CHECK(range.world->hitPoints(car) == 100);
+	range.world->setWaterLevel(range.objects.find(car)->position().y + 2);
 	run(0.4f);
 	CHECK(range.world->hitPoints(car) == 100);
 	run(0.2f); // the deep timer's 0.5 s

@@ -8642,10 +8642,12 @@ Vehicles take damage through their armour settings:
 - **Critical damage:** below `armor.criticalDamage` a vehicle burns down at
   `hpLostWhileCriticalDamage` a second (FAV: 18 below 151, out in 5.6 s from
   100).
-- **Water and rolling:** in water deeper than `armor.waterLevel` over its
-  centre for longer than `waterDamageDelay`, a vehicle loses
-  `hpLostWhileInWater` a second (`hpLostWhileInDeepWater` past
-  `deepWaterLevel`). Upside down, it loses `hpLostWhileUpSideDown`.
+- **Water and rolling:** water depth is measured from the vehicle origin to
+  the water plane. The signed `armor.waterLevel` and `armor.deepWaterLevel`
+  offsets are compared by magnitude, so an origin above the water plane does
+  not trigger damage; once the corresponding depth is exceeded, the vehicle
+  loses `hpLostWhileInWater` or `hpLostWhileInDeepWater` on its configured
+  timer. Upside down, it loses `hpLostWhileUpSideDown`.
 - **Destruction:** a destroyed vehicle explodes with `armor.explosion*`
   (FAV: 300 over 6 m), kills everyone aboard, and stays as a wreck for
   `timeToStayAsWreck`. Its spawner then puts out a new one.
