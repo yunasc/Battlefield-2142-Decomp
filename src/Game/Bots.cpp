@@ -2187,6 +2187,80 @@ void BotManager::updateGoal(Bot& bot, const GameWorld::PlayerInfo& self)
 	const auto& areas = m_settings.strategy.areas;
 	physics::Vec3 orderAt;
 	bool hasOrder = false;
+	bool titanSiloOrder = false;
+	// AIDLL's shipped strategic areas do not describe gpm_ti objectives.
+	// Its generic fallback sees the two moving Titan control points alongside
+	// the five silos; the Titan points cannot change hands, and bots can spend
+	// their whole round treating them as capture objectives. Give on-foot bots
+	// and ground-vehicle drivers a silo goal directly, using the mode's actual
+	// silo/control-point state.
+	// Existing Titan gun and pod behavior runs before updateGoal and is left
+	// alone. Ground-vehicle drivers can use the same objective with their
+	// vehicle mesh and the area's vehicle order position; passengers keep
+	// their normal seat behavior.
+	if (m_world.gameMode() == "gpm_ti" && self.team >= 1 && self.team <= 2 && (!self.vehicle || self.driving)) {
+		const std::vector<GameWorld::SiloInfo> silos = m_world.missileSilos();
+		const auto actionable = [&](const GameWorld::SiloInfo& silo) -> const GameWorld::ControlPointInfo* {
+			if (silo.team == self.team) {
+				return nullptr;
+			}
+			for (const GameWorld::ControlPointInfo& point : points) {
+				if (point.id == silo.controlPoint && point.capturable) {
+					return &point;
+				}
+			}
+			return nullptr;
+		};
+		const GameWorld::ControlPointInfo* targetPoint = nullptr;
+		// Keep an unfinished silo assignment stable. Once that silo changes to
+		// our team, the next update selects another live target.
+		if (bot.goalOrder >= 0 && static_cast<size_t>(bot.goalOrder) < areas.size()) {
+			const int current = areas[static_cast<size_t>(bot.goalOrder)].controlPoint;
+			for (const GameWorld::SiloInfo& silo : silos) {
+				if (silo.controlPoint == current) {
+					if (const GameWorld::ControlPointInfo* point = actionable(silo)) {
+						targetPoint = point;
+					}
+					break;
+				}
+			}
+		}
+		if (!targetPoint) {
+			float best = std::numeric_limits<float>::infinity();
+			for (const GameWorld::SiloInfo& silo : silos) {
+				const GameWorld::ControlPointInfo* point = actionable(silo);
+				if (!point) {
+					continue;
+				}
+				int assigned = 0;
+				for (const auto& [id, other] : m_bots) {
+					if (id == self.id || other.goalOrder < 0 || static_cast<size_t>(other.goalOrder) >= areas.size()) {
+						continue;
+					}
+					const GameWorld::PlayerInfo* mate = playerOf(id);
+					if (mate && mate->team == self.team && areas[static_cast<size_t>(other.goalOrder)].controlPoint == silo.controlPoint) {
+						++assigned;
+					}
+				}
+				// Spread new orders over available silos without taking a bot
+				// away from its existing capture. Neutral silos need one flag
+				// rise; enemy silos need a neutralize and capture, so favor the
+				// former when travel distances are otherwise comparable.
+				const float preference = point->team == 0 ? 0.0f : 900.0f;
+				const float score = physics::lengthSquared(point->position - self.position) +
+					static_cast<float>(assigned) * 250000.0f + preference;
+				if (score < best) {
+					best = score;
+					targetPoint = point;
+				}
+			}
+		}
+		if (targetPoint) {
+			orderAt = targetPoint->position;
+			hasOrder = true;
+			titanSiloOrder = true;
+		}
+	}
 	// A driver heads for the areas' vehicle order positions over the
 	// vehicle mesh.
 	const int map = self.vehicle && self.driving ? 1 : 0;
@@ -2194,7 +2268,9 @@ void BotManager::updateGoal(Bot& bot, const GameWorld::PlayerInfo& self)
 	// state 2: 0x100c0130); without one it keeps the goal it had, or, with
 	// none, goes as a bot outside squads would.
 	const Squad* squad = self.squad ? this->squad(self.team, self.squad) : nullptr;
-	if (squad && squad->state == 2 && squad->kind != 4) {
+	if (titanSiloOrder) {
+		// The mode-specific target above supersedes a generic SAI squad order.
+	} else if (squad && squad->state == 2 && squad->kind != 4) {
 		orderAt = squad->orderAt;
 		hasOrder = true;
 	} else if (squad && squad->state != 2 && bot.hasGoal && !bot.orderRegoal) {

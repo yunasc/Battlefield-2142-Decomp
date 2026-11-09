@@ -15,6 +15,7 @@
 #include "Physics/RigidBody.h"
 #include "Random.h"
 
+#include <algorithm>
 #include <functional>
 #include <array>
 #include <string>
@@ -341,9 +342,9 @@ struct FireArmSettings {
 	// the SMGs and handguns don't set it.
 	float velocity = 600;
 	std::string projectileTemplate;
-	// Heat (guns without magazines): each round adds heatAddWhenFire, it
-	// cools by coolDownPerSec, and at 1 the gun stops for overheatPenalty
-	// seconds.
+	// Heat: each round adds heatAddWhenFire; over 1 the heat becomes
+	// overheatPenalty and the gun stops until it has cooled (coolDownPerSec,
+	// only while idle) back to below 1.
 	float heatAddWhenFire = 0;
 	float coolDownPerSec = 0;
 	float overheatPenalty = 0;
@@ -495,6 +496,8 @@ public:
 
 	const FireArmSettings& settings() const { return m_settings; }
 	int roundsInMag() const { return m_rounds; }
+	// A real round leaving this tick, including weapons with unlimited ammo.
+	bool firedThisTick() const { return m_firedThisTick; }
 	int magsLeft() const { return m_mags; }
 	bool reloading() const { return m_reloadLeft > 0; }
 	// A thrown round on its way out (ThrownFireComp states 2 and 3).
@@ -534,11 +537,11 @@ public:
 	// that can't be reloaded.
 	bool selectable() const;
 	float reloadLeft() const { return m_reloadLeft; } // seconds (the HUD's reload bar)
-	float heat() const { return m_heat; } // 0..1
+	float heat() const { return std::min(m_heat, 1.0f); } // 0..1
 	// Resupply (ammo hubs): adds magazines up to the kit's number; false
 	// when full.
 	bool addMagazine();
-	bool overheated() const { return m_overheatLeft > 0; }
+	bool overheated() const { return m_heat >= 1; }
 	// Between rounds: the fire component's state above 1 (a round's cycle,
 	// state 4 until its ticksBetweenShots are past, or the spin-up, state 3).
 	bool cycling() const { return m_cooldown > 0 || m_startDelay >= 0; }
@@ -606,7 +609,8 @@ private:
 	bool m_reloadFilled = false; // the magazine swapped (changeMagAt) in this reload
 	int m_readyIn = 0;           // ticks of delayToUse left
 	float m_heat = 0;
-	float m_overheatLeft = 0;
+	float m_heatAtFire = 0; // the heat the last round left (0x005c3e78)
+	float m_sinceFire = 0;  // seconds since it
 	int m_mode = kFireAutomatic;
 	bool m_useModes = true;
 	bool m_triggerWas = false;
@@ -614,6 +618,7 @@ private:
 	int m_startDelay = -1;   // fireStartDelay's ticks left (-1: none pending)
 	Random m_startRandom {0xcfb}; // 0x005f1650's draws (its seed: the owner's +0x214 or the time, + 0xcfb)
 	bool m_pending = false; // a press waiting for the gun
+	bool m_firedThisTick = false;
 	bool m_clicked = false; // a press on an empty magazine (takeClick)
 	int m_burstLeft = 0;
 	int m_launchIn = -1;   // a thrown round's ticks to go (states 2 and 3), -1 none

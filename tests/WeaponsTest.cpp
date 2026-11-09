@@ -14,6 +14,21 @@
 
 using namespace dice::hfe;
 
+TEST(Weapons_FirePulseIncludesUnlimitedAmmoAndRejectsCooldown)
+{
+	game::FireArmSettings settings;
+	settings.magSize = -1;
+	settings.roundsPerMinute = 600;
+	game::FireArm gun(settings);
+	CHECK(!gun.firedThisTick());
+	CHECK(gun.tick(1 / 30.0f, true));
+	CHECK(gun.firedThisTick() && gun.roundsInMag() == -1);
+	CHECK(!gun.tick(1 / 30.0f, true) && !gun.firedThisTick());
+	CHECK(!gun.tick(1 / 30.0f, true) && !gun.firedThisTick());
+	CHECK(gun.tick(1 / 30.0f, true) && gun.firedThisTick());
+	CHECK(!gun.tick(1 / 30.0f, false) && !gun.firedThisTick());
+}
+
 TEST(Weapons_DamageFallsOffWithDistance)
 {
 	game::ProjectileSettings rifle; // eu_ar_rifleProjectile
@@ -112,7 +127,8 @@ TEST(Weapons_RandomDistributions)
 TEST(Weapons_GunsHeatUp)
 {
 	// eu_fav_MachineGun_Firearm: no magazine, 0.02 heat a round, cooling
-	// 0.4 a second, 2 s stopped when overheated.
+	// 0.4 a second, overheatPenalty 2. A held trigger never cools (the
+	// weapon update cools in fire state 0 only, 0x005c5d5e): 51 rounds.
 	game::FireArmSettings settings;
 	settings.magSize = -1;
 	settings.roundsPerMinute = 1800; // a round a tick
@@ -124,13 +140,58 @@ TEST(Weapons_GunsHeatUp)
 	while (!gun.overheated() && rounds < 1000) {
 		rounds += gun.tick(1 / 30.0f, true) ? 1 : 0;
 	}
-	// Each tick cools 0.0133 while a round adds 0.02: about 150 rounds.
-	CHECK(rounds > 140 && rounds < 160);
+	CHECK(rounds == 51);
 	CHECK(!gun.tick(1 / 30.0f, true));
-	for (int i = 0; i < 61; ++i) {
+	// The heat is the penalty (2) and cools to 1 in 2.5 s.
+	for (int i = 0; i < 70; ++i) {
 		gun.tick(1 / 30.0f, false);
 	}
-	CHECK(!gun.overheated() && gun.heat() < 0.25f && gun.tick(1 / 30.0f, true));
+	CHECK(gun.overheated());
+	for (int i = 0; i < 10; ++i) {
+		gun.tick(1 / 30.0f, false);
+	}
+	CHECK(!gun.overheated() && gun.heat() < 1 && gun.tick(1 / 30.0f, true));
+}
+
+// as_heavy_mech_main_cannon / us_heavy_mech_minigun_firearm: a magazine and
+// heat. Held fire overheats them after about 2.8 s although the cooling
+// (0.5 a second) is faster than the heat added (0.375 a second); a tapped
+// trigger cools between rounds.
+TEST(Weapons_WalkerMainGunOverheatsWhenHeld)
+{
+	game::FireArmSettings settings;
+	settings.roundsPerMinute = 450;
+	settings.magSize = 450;
+	settings.nrOfMags = 1;
+	settings.heatAddWhenFire = 0.05f;
+	settings.coolDownPerSec = 0.5f;
+	settings.overheatPenalty = 2.5f;
+	game::FireArm gun(settings);
+	int ticks = 0;
+	int rounds = 0;
+	while (!gun.overheated() && ticks < 600) {
+		rounds += gun.tick(1 / 30.0f, true) ? 1 : 0;
+		++ticks;
+	}
+	CHECK(rounds >= 20 && rounds <= 21); // 20 x 0.05 sits on the edge of 1
+	CHECK(ticks > 70 && ticks < 90);
+	CHECK(gun.heat() == 1);
+	// (2.5 - 1) / 0.5 = 3 s of cooling to fire again.
+	int wait = 0;
+	while (gun.overheated() && wait < 300) {
+		gun.tick(1 / 30.0f, false);
+		++wait;
+	}
+	CHECK(wait >= 89 && wait <= 92);
+	// A round every other second never gets near 1.
+	game::FireArm tap(settings);
+	for (int i = 0; i < 20; ++i) {
+		tap.tick(1 / 30.0f, true);
+		for (int j = 0; j < 60; ++j) {
+			tap.tick(1 / 30.0f, false);
+		}
+	}
+	CHECK(!tap.overheated() && tap.heat() == 0);
 }
 
 // ammo.reloadWithoutPlayer (0x005f4bb0 / 0x005f3a40): a gun left with a

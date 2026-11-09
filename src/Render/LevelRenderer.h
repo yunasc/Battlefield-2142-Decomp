@@ -178,6 +178,8 @@ struct LevelSources {
 	// draw instead of the exterior (a vehicle's cockpit seen from inside,
 	// BF2142.exe 0x00612880); false for the default. Asked by syncObjects.
 	std::function<bool(uint32_t object, int& geometry, int& lod)> geometryFor;
+	// The vehicle the view is inside (its cockpit drawn), 0 for none.
+	std::function<uint32_t()> cockpitVehicle;
 	// Rain and snow (rainManager.*), if any.
 	const scene::RainSettings* rain = nullptr;
 	// renderer.global*LodDistanceScale and terrainCuller.* (defaults if null).
@@ -771,7 +773,7 @@ private:
 		SDL_GPUTexture* texture;
 		uint32_t firstVertex;
 		uint32_t vertexCount;
-		int blend[2] = {0, 0}; // HudQuad::blend (D3DBLEND source, destination)
+		int blend[2] = {0, 0}; // HudQuad::blend (Meme source, destination)
 	};
 	SDL_GPUBuffer* m_overlayVertices = nullptr;
 	// The menu layer: its triangles by texture, and the textures of images

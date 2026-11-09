@@ -481,4 +481,19 @@ struct ScoreboardLine {
 };
 std::vector<ScoreboardLine> scoreboardBySquad(const std::vector<ScoreboardMember>& members);
 
+// The capture bar's variables for a soldier at `at`: the closest capturable
+// control point whose radius holds him (the scripts' getOccupyingCP), and
+// the flag's height as the bar value.
+struct CaptureBar {
+	bool enabled = false, neutralShow = false, takenShow = false;
+	float value = 0;
+};
+CaptureBar captureBar(const std::vector<game::GameWorld::ControlPointInfo>& points, const physics::Vec3& at);
+
+// Titan mode's ticket bars span the two parts of a Titan's armour: hull at
+// 0..60 and shield at 60..100. The game-mode script mirrors this value into
+// tickets; use the native Titan armour as the HUD source so the bars remain
+// tied to the live mode state even if a script callback is absent.
+float titanHudHealth(const game::GameWorld::TitanInfo& titan);
+
 } // namespace dice::hfe::menu

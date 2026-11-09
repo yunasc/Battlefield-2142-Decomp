@@ -1509,6 +1509,7 @@ void HudManager::drawMap(const Node& node, float alpha, float seconds, std::vect
 		return;
 	}
 	const bool full = number("MapFullSize") != 0;
+	const bool spawning = number("SpawnShow") != 0;
 	const float* pos = full ? node.maxiPos : node.miniPos;
 	const float* size = full ? node.maxiSize : node.miniSize;
 	// The commander screen's map at setCommanderPos/Size (-300/-300,
@@ -1597,6 +1598,7 @@ void HudManager::drawMap(const Node& node, float alpha, float seconds, std::vect
 		}
 	}
 	m_mapView = {true, nx, ny, nx + nw, ny + nh, mapX, mapY, mapW, mapH};
+	std::vector<Hit> labelRects;
 	for (const MapMarker& marker : m_mapMarkers) {
 		const float u = (marker.x - m_mapOrigin[0]) / m_mapSize[0];
 		const float v = 1 - (marker.z - m_mapOrigin[1]) / m_mapSize[1];
@@ -1623,9 +1625,71 @@ void HudManager::drawMap(const Node& node, float alpha, float seconds, std::vect
 			continue;
 		}
 		out.push_back(q);
+		// Deployment markers need a readable identifier: the white spawn
+		// icon alone is hard to distinguish from the map texture. Keep its
+		// label tied to the same projected point and include the label in the
+		// hit target so clicking either part selects that point.
+		float labelHitX0 = 0, labelHitY0 = 0, labelHitX1 = 0, labelHitY1 = 0;
+		bool hasLabelHit = false;
+		if (!marker.label.empty() && spawning) {
+			std::string label = marker.label;
+			if (m_localize) {
+				const std::string localized = m_localize(label);
+				if (localized != label) {
+					label = localized;
+				}
+			}
+			if (label.rfind("ID_", 0) == 0) {
+				label.erase(0, 3);
+			}
+			const size_t prefix = label.rfind("CP_", 0) == 0 || label.rfind("cp_", 0) == 0 ? 3 : 0;
+			label.erase(0, prefix);
+			std::replace(label.begin(), label.end(), '_', ' ');
+			const std::string fontPath = "Fonts/hudFontLocalBold_9.dif";
+			if (const HudFont* f = font(fontPath)) {
+				const float textWidth = f->width(label);
+				float labelX = x0 + side + 3;
+				if (labelX + textWidth > nx + nw - 2) {
+					labelX = x0 - textWidth - 3;
+				}
+				if (textWidth <= nw - 4) {
+					labelX = std::clamp(labelX, nx + 2, nx + nw - textWidth - 2);
+				}
+				const float lastLabelY = std::max(ny + 1, ny + nh - f->lineHeight - 1);
+				float labelY = std::clamp(sy - f->lineHeight * 0.5f, ny + 1, lastLabelY);
+				// Titan bases can have several spawn choices at one map point.
+				// Stack their names so each stays readable and independently clickable.
+				for (size_t attempt = 0; attempt <= labelRects.size(); ++attempt) {
+					const auto collision = std::find_if(labelRects.begin(), labelRects.end(), [&](const Hit& r) {
+						return labelX < r.x1 + 2 && labelX + textWidth + 2 > r.x0
+							&& labelY < r.y1 + 2 && labelY + f->lineHeight + 2 > r.y0;
+					});
+					if (collision == labelRects.end()) break;
+					labelY = collision->y1 + 2;
+					if (labelY > lastLabelY) labelY = ny + 1;
+				}
+				labelRects.push_back({labelX, labelY, labelX + textWidth, labelY + f->lineHeight, marker.id});
+				const float shadow[4] = {0, 0, 0, alpha};
+				const float text[4] = {1, 1, 1, alpha};
+				std::vector<HudQuad> labelQuads;
+				drawString(fontPath, label, labelX + 1, labelY + 1, 0, 0, shadow, labelQuads);
+				drawString(fontPath, label, labelX, labelY, 0, 0, text, labelQuads);
+				for (HudQuad& glyph : labelQuads) {
+					if (clipTo(glyph, nx, ny, nx + nw, ny + nh)) out.push_back(std::move(glyph));
+				}
+				labelHitX0 = std::max(labelX, nx);
+				labelHitY0 = std::max(labelY, ny);
+				labelHitX1 = std::min(labelX + textWidth, nx + nw);
+				labelHitY1 = std::min(labelY + f->lineHeight, ny + nh);
+				hasLabelHit = labelHitX1 > labelHitX0 && labelHitY1 > labelHitY0;
+			}
+		}
 		if (marker.id >= 0) {
-			m_mapHits.push_back({std::max(x0, nx), std::max(y0, ny), std::min(x0 + side, nx + nw), std::min(y0 + tall, ny + nh),
-				marker.id});
+			m_mapHits.push_back({std::max(x0, nx), std::max(y0, ny), std::min(x0 + side, nx + nw),
+				std::min(y0 + tall, ny + nh), marker.id});
+			if (hasLabelHit) {
+				m_mapHits.push_back({labelHitX0, labelHitY0, labelHitX1, labelHitY1, marker.id});
+			}
 		}
 	}
 }
