@@ -263,6 +263,37 @@ TEST(Vehicles_TrackedTankDrivesAndTurns)
 	CHECK(speed >= 0 && speed < 1);
 }
 
+TEST(Vehicles_FavSustainedAccelerationDoesNotTip)
+{
+	if (!gameDir()) return;
+	for (const char* mod : {"mods/bf2142", "mods/Project_Remaster_v17_Final"}) {
+		for (const char* name : {"as_fav", "eu_fav"}) {
+			for (bool boost : {false, true}) {
+				Garage g(gameDir(), mod);
+				if (!g.loaded || !g.templates.find(name)) continue;
+				const uint32_t id = g.start(name, {0, 2, 6});
+				if (!g.enter(id)) continue;
+				game::SoldierInput input;
+				input.throttle = 1;
+				input.strafe = 0.2f;
+				input.sprint = boost;
+				float maxPitch = 0, maxRoll = 0, maxSpeed = 0;
+				for (int tick = 0; tick < 150; ++tick) {
+					g.world->setPlayerInput(input);
+					g.world->tick(1 / 30.0f);
+					for (const auto& v : g.world->vehicleList()) if (v.object == id) {
+						maxPitch = std::max(maxPitch, std::fabs(std::asin(std::clamp(v.forward.y, -1.0f, 1.0f)) * 57.29578f));
+						maxRoll = std::max(maxRoll, std::fabs(std::asin(std::clamp(v.right.y, -1.0f, 1.0f)) * 57.29578f));
+						maxSpeed = std::max(maxSpeed, std::sqrt(physics::lengthSquared(v.velocity)));
+					}
+				}
+				std::fprintf(stderr, "  %s %s boost %d: peak pitch %.1f roll %.1f, speed %.1f\n", mod, name, boost, maxPitch, maxRoll, maxSpeed);
+				CHECK(maxPitch < 35 && maxRoll < 35);
+			}
+		}
+	}
+}
+
 // The hover tank (as_tank: Springs straight under the root, plane and
 // helicopter engines, no wheels driven): it floats on its antigravs; W
 // levels the forward thruster and pushes it on, A/D strafe (PIYaw), the

@@ -5765,6 +5765,19 @@ void BotManager::aim(Bot& bot, const GameWorld::PlayerInfo& self, const physics:
 	const AimGains& g = bot.gains;
 	float gunYaw = 0, gunPitch = 0;
 	const bool gunning = self.vehicle && (self.seat > 0 || drivesGun(self)) && m_world.gunAim(self.vehicle, self.seat, gunYaw, gunPitch);
+	// A walker's driver has a pitch-only gun: its main cannon and rocket
+	// racks have no PIMouseLookX bundle. The AIDLL still aims them through
+	// PIMouseLookX, but no part consumes that axis, so the bot keeps firing
+	// along the hull (or sweeps its aim while navigation turns the hull).
+	// During a target aim, send the same yaw controller to the walker's
+	// PIYaw hull control. Keep the path follower's steering on MoveTo, where
+	// it already turns the hull toward its steering point.
+	bool mechHullAim = false;
+	if (gunning && hasTarget && equipmentOf(self) == "Mech") {
+		const auto seats = m_world.vehicleSeats(self.vehicle);
+		mechHullAim = self.seat >= 0 && static_cast<size_t>(self.seat) < seats.size()
+			&& seats[static_cast<size_t>(self.seat)].yawBundle.empty();
+	}
 	// A seat's gun aims from its round's start (the weapon's position,
 	// AIDLL 0x1008e940: FUN_100a4090) along its own forward, which turns with the
 	// hull: the angles are the hull's frame's, as the gun's yaw and pitch.
@@ -5873,7 +5886,11 @@ void BotManager::aim(Bot& bot, const GameWorld::PlayerInfo& self, const physics:
 	if ((pitchErrorDegrees >= 0 && pitchStep > pitchErrorDegrees) || (pitchErrorDegrees < 0 && pitchStep < pitchErrorDegrees)) {
 		pitchStep = pitchErrorDegrees;
 	}
-	input.turn += turn;
+	if (mechHullAim) {
+		input.strafe = std::clamp(right, -1.0f, 1.0f); // PIYaw turns the chassis on its spot
+	} else {
+		input.turn += turn;
+	}
 	bot.pitch = std::clamp(truePitch + pitchStep, -kPitchLimit, kPitchLimit);
 	input.aimPitch = bot.pitch;
 }

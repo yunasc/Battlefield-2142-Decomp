@@ -2527,7 +2527,9 @@ struct CarField {
 		templates.registerType(10, "Spring");
 		templates.registerType(11, "RotationalBundle");
 		templates.registerType(12, "GenericFireArm");
+		templates.registerType(13, "MechLegs");
 		templates.create("Soldier", "us_light_soldier")->settings()["armor.maxHitPoints"] = "100";
+		templates.create("Soldier", "pac_light_soldier")->settings()["armor.maxHitPoints"] = "100";
 		world::ObjectTemplate* point = templates.create("ControlPoint", "cp_eu");
 		point->settings()["controlPointId"] = "2";
 		point->settings()["team"] = "2";
@@ -2555,6 +2557,28 @@ struct CarField {
 		}
 		addCar("car", "car_firearm");
 		addCar("car_b", "car_firearm_b");
+		// A driver-operated Mech fixture with a pitch-only weapon. This mirrors
+		// the shipped walker's main gun: there is no PIMouseLookX part, so the
+		// bot must turn the chassis while following an enemy.
+		world::ObjectTemplate* mech = templates.create("PlayerControlObject", "mech_pitch_only");
+		for (const auto& [key, value] : templates.find("car")->settings()) mech->settings()[key] = value;
+		mech->settings()["aiTemplate"] = "TestMech";
+		mech->children().clear();
+		mech->children().push_back({"car_entry", {-1.5f, 0, 0}, {}});
+		mech->children().push_back({"mech_legs", {0, -0.52f, 0}, {}});
+		mech->children().push_back({"mech_pitch", {0, 0.8f, 0}, {}});
+		world::ObjectTemplate* mechPitch = templates.create("RotationalBundle", "mech_pitch");
+		mechPitch->settings()["inputToPitch"] = "PIMouseLookY";
+		mechPitch->children().push_back({"mech_gun", {0, 0.2f, 0.5f}, {}});
+		world::ObjectTemplate* mechLegs = templates.create("MechLegs", "mech_legs");
+		mechLegs->settings()["length"] = "2.8";
+		mechLegs->settings()["stepHeight"] = "1.4";
+		world::ObjectTemplate* mechGun = templates.create("GenericFireArm", "mech_gun");
+		mechGun->settings()["projectileTemplate"] = "bullet";
+		mechGun->settings()["aiTemplate"] = "car_firearm";
+		mechGun->settings()["velocity"] = "300";
+		mechGun->settings()["fire.roundsPerMinute"] = "120";
+		templates.create("GenericProjectile", "bullet")->settings()["damage"] = "1";
 		game::registerBotConsoleMethods(console, settings);
 		for (const char* line : {"aiTemplatePlugIn.create Mobile TestCar_Mobile", "aiTemplatePlugIn.maxSpeed 20",
 				 "aiTemplate.create TestCar", "aiTemplate.addType ITGround", "aiTemplate.addPlugIn TestCar_Mobile",
@@ -2578,7 +2602,16 @@ struct CarField {
 				 "aiSettings.setVehicleBehaviour Infantery Avoid BBAvoid BBPAvoidCollisionInfantery 1 UCUnion UnitWeights",
 				 "aiSettings.setVehicleBehaviour Infantery Change BBChange BBPChange 3 UCUnion UnitWeights",
 				 "aiSettings.setVehicleBehaviour Infantery Idle BBIdle BBPIdleInfantery 5 UCUnion UnitWeights",
-				 "aiSettings.setVehicleDefaultBehaviour Infantery Idle"}) {
+				 "aiSettings.setVehicleDefaultBehaviour Infantery Idle",
+				 "aiTemplatePlugIn.create Unit TestMech_Unit", "aiTemplatePlugIn.equipmentTypeName Mech",
+				 "aiTemplatePlugIn.create ControlInfo TestMech_Ctrl", "aiTemplatePlugIn.proportionalConstant -3",
+				 "aiTemplatePlugIn.derivativeConstant -3", "aiTemplate.create TestMech",
+				 "aiTemplate.addType ITGround", "aiTemplate.addPlugIn TestCar_Mobile",
+				 "aiTemplate.addPlugIn TestMech_Unit", "aiTemplate.addPlugIn TestMech_Ctrl",
+				 "weaponTemplate.create car_firearm", "weaponTemplate.setStrength Infantry 2",
+				 "weaponTemplate.maxRange 150", "weaponTemplate.allowedDeviation 2",
+				 "aiSettings.setVehicleBehaviour Mech Fire BBFireInfantery BBPFireInfantery 4 UCUnion UnitWeights",
+				 "aiSettings.setVehicleDefaultBehaviour Mech Fire", "aiSettings.setViewDistance 200"}) {
 			console.execute(line, out);
 		}
 		world = std::make_unique<game::GameWorld>(templates, objects);
@@ -3836,6 +3869,38 @@ TEST(Bots_DriverAimsAndFiresTheTurret)
 	CHECK(fromTank >= 2);
 	CHECK(std::fabs(std::remainder(yaw + hull - 35, 360.0f)) < 8);
 	CHECK(physics::lengthSquared(now - start) < 3.0f * 3.0f);
+}
+
+TEST(Bots_MechDriverTurnsHullToAimPitchOnlyGun)
+{
+	const char* gameDir = std::getenv("BF2142_GAME_DIR");
+	if (!gameDir) return;
+	CarField field(gameDir);
+	const uint32_t id = field.objects.create(field.templates.find("mech_pitch_only"), {3, 1.2f, 0}, {0, 0, 0})->id();
+	const int bot = field.soldier("Walker", true, 3, 0);
+	field.ticks(90);
+	field.board(bot, 0);
+	CHECK(field.info(bot).vehicle == id);
+	const int enemy = field.world->addPlayer("Enemy", 1, false);
+	field.world->spawnSoldier(enemy);
+	game::GameWorld::PlayerInfo enemyInfo;
+	field.world->playerInfo(enemy, enemyInfo);
+	field.world->setSoldierPosition(enemyInfo.soldier, {15, 0, 26}); // 30 degrees, inside the default walker view
+	game::BotManager bots(*field.world, field.settings);
+	size_t fromMech = 0;
+	for (int tick = 0; tick < 30 * 8; ++tick) {
+		const size_t before = field.world->projectiles().size();
+		field.ticks(1, &bots);
+		for (size_t i = before; i < field.world->projectiles().size(); ++i) {
+			fromMech += field.world->projectiles()[i].shooter == id;
+		}
+	}
+	const float yaw = field.objects.find(id)->rotation().x;
+	std::fprintf(stderr, "  pitch-only Mech gun: yaw %.1f deg, %zu shots, known %d, behaviour %s\n", yaw, fromMech,
+		bots.knows(bot, enemy), bots.behaviour(bot).c_str());
+	CHECK(bots.knows(bot, enemy));
+	CHECK(std::fabs(std::remainder(yaw - 30.0f, 360.0f)) < 18);
+	CHECK(fromMech >= 1);
 }
 
 // The vehicle plan's move (0x100795a0: If NOT ObjectDistance [minRange,
