@@ -45,9 +45,12 @@ struct TitanLevel {
 	std::function<void()> afterTick;
 	bool loaded = false;
 
-	TitanLevel(const char* gameDir, const std::string& name, int size, bool start = true)
+	TitanLevel(const char* gameDir, const std::string& name, int size, bool start = true, const char* mod = nullptr, bool statics = false)
 	{
 		files.setRootPath(gameDir);
+		if (mod) {
+			files.addSearchPath(mod); // as main: the mod first, the base game behind it
+		}
 		files.addSearchPath("mods/bf2142");
 		files.setMountingAllowed(true);
 		const std::string level = "Levels/" + name + "/";
@@ -86,11 +89,23 @@ struct TitanLevel {
 		}
 		CHECK(untyped.size() > 100);
 		world::registerUntypedTemplateProperties(console, templates, untyped);
+		// The engine's constants (c_ETHelicopter...), which main registers: without
+		// them a template's setEngineType is refused and its engine has type 0.
+		std::ifstream constants(std::string(BF2142_SOURCE_DIR) + "/symbols/BF2142.exe.constants.csv");
+		while (std::getline(constants, line)) {
+			const size_t comma = line.find(',');
+			if (comma != std::string::npos) {
+				console.registerConstant(line.substr(0, comma), line.substr(comma + 1));
+			}
+		}
 		templates.setLoading(true);
 		world::loadObjectTemplates(console, files, "Objects/", false);
 		templates.setLoading(false);
 		console.run("Common/Material/MaterialManagerSettings.con", {}, out);
 		console.run(level + "Heightdata.con", {}, out);
+		if (statics) {
+			console.run(level + "StaticObjects.con", {}, out);
+		}
 		console.run(level + "GameModes/gpm_ti/" + std::to_string(size) + "/GamePlayObjects.con", {"host"}, out);
 		const terrain::Heightmap* ground = heightmaps.primary();
 		CHECK(ground && ground->loaded());

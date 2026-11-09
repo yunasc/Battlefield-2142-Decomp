@@ -17,6 +17,8 @@
 #include "Physics/CollisionTemplateManager.h"
 #include "Physics/MaterialManager.h"
 #include "Main/HudWorld.h"
+#include "Main/PlayerCamera.h"
+#include "Net/RemoteInput.h"
 #include "Render/PostProduction.h"
 #include "TestMain.h"
 #include "World/Object.h"
@@ -52,10 +54,11 @@ struct Garage {
 	std::unique_ptr<game::GameWorld> world;
 	bool loaded = false;
 
-	explicit Garage(const char* gameDir)
+	explicit Garage(const char* gameDir, const char* modPath = "mods/bf2142")
 	{
 		files.setRootPath(gameDir);
-		files.addSearchPath("mods/bf2142");
+		files.addSearchPath(modPath);
+		if (std::string(modPath) != "mods/bf2142") files.addSearchPath("mods/bf2142");
 		files.setMountingAllowed(true);
 		bindMethod(console, "fileManager.mountArchive", ConsoleAccess::Anyone,
 			[this](std::string archive, std::string mountPoint, bool) { files.mountArchive(archive, mountPoint); }, 2);
@@ -566,6 +569,91 @@ TEST(Vehicles_GunshipFlies)
 	std::fprintf(stderr, "  as_ag: %.1f m up, %.1f m ahead after 5 s\n", p.y - rest.y, p.z - rest.z);
 	CHECK(p.y - rest.y > 5);
 	CHECK(p.z - rest.z > 10);
+}
+
+// A gunship's pilot pitches up and down at comparable rates (the report:
+// "can pitch down, can't pitch up"): from a hover, held pitch keys and a
+// sustained mouse stream each way.
+TEST(Vehicles_GunshipPitchesBothWays)
+{
+	if (!gameDir()) {
+		return;
+	}
+	for (const char* mod : {"mods/bf2142", "mods/Project_Remaster_v17_Final"}) {
+		for (const char* name : {"as_ag", "us_ag"}) {
+			for (int mode = 0; mode < 4; ++mode) {
+				Garage g(gameDir(), mod);
+				if (!g.loaded || !g.templates.find(name)) {
+					continue;
+				}
+				const uint32_t ag = g.start(name, {0, 3, 8});
+				if (!g.enter(ag)) {
+					continue;
+				}
+				game::SoldierInput lift;
+				lift.throttle = 1;
+				g.drive(lift, 4);
+				g.drive({}, 3);
+				// mode 0/1: ArrowDown (-1, nose up) / ArrowUp (+1); 2/3: mouse up / down.
+				const float dir = mode % 2 == 0 ? 1.0f : -1.0f; // +1 = nose up
+				float aim = 0;
+				float peak = 0, peakRate = 0;
+				const auto pitchOf = [&] {
+					for (const auto& info : g.world->vehicleList()) {
+						if (info.object == ag) {
+							return std::pair<float, float> {std::asin(std::clamp(info.forward.y, -1.0f, 1.0f)) * 57.29578f,
+								info.angularVelocity.x * info.right.x + info.angularVelocity.y * info.right.y + info.angularVelocity.z * info.right.z};
+						}
+					}
+					return std::pair<float, float> {};
+				};
+				const float start = pitchOf().first;
+				for (int i = 0; i < 60; ++i) {
+					game::SoldierInput in;
+					if (mode < 2) {
+						in.pitchAxis = -dir;
+					} else {
+						aim += dir * 4.0f; // degrees a tick, up positive
+						in.aimPitch = aim;
+					}
+					g.world->setPlayerInput(in);
+					g.world->tick(1 / 30.0f);
+					const auto [angle, rate] = pitchOf();
+					if (std::fabs(angle - start) > std::fabs(peak)) peak = angle - start;
+					peakRate = std::max(peakRate, std::fabs(rate));
+					if (i % 10 == 9) {
+						std::fprintf(stderr, "    %s %s mode %d t=%.1f pitch %.2f rate %.3f\n", mod, name, mode, (i + 1) / 30.0f, angle - start, rate);
+					}
+				}
+				std::fprintf(stderr, "  %s %s mode %d: peak %.2f deg, peak rate %.3f rad/s\n", mod, name, mode, peak, peakRate);
+				CHECK(peak * dir > 3);
+			}
+		}
+	}
+}
+
+// The remote path (client -> PlayerMove -> server/prediction): a driver's
+// PIPitch is the mouse's change, so a pilot who keeps pulling the mouse up
+// (the hull fights back) must not run out of pitch input. The server's
+// clamped aim pitch (+-89) swallowed every further pull up while pulls down
+// still worked: "can pitch down, can't pitch up".
+TEST(Vehicles_RemoteMouseKeepsPitchingUp)
+{
+	for (const float dir : {1.0f, -1.0f}) { // +1: mouse up (nose up)
+		net::MoveInputState state;
+		float aim = 0, last = 0, lastLook = 0, early = 0, late = 0;
+		for (int i = 0; i < 120; ++i) {
+			game::SoldierInput in;
+			in.aimPitch = aim += dir * 2.0f;
+			const game::SoldierInput seen = net::soldierInputFromMove(net::playerInputFrom(in, last).toMove(i), state);
+			last = in.aimPitch;
+			const float driven = game::GameWorld::driverInput(seen, 1, lastLook).pitch;
+			lastLook = seen.aimPitch;
+			(i == 5 ? early : late) = -driven * dir; // nose-up positive in the direction pulled
+		}
+		std::fprintf(stderr, "  remote mouse stream dir %+.0f: pitch input early %.3f, after 120 ticks %.3f\n", dir, early, late);
+		CHECK(late > 0.9f * early && early > 0.2f);
+	}
 }
 
 // A recoil graph with a large exponent (eu_sni's) stays finite: the
@@ -2178,4 +2266,160 @@ TEST(Vehicles_StaticGunnerSitsOnTheCockpit)
 	const float after = g.yaw(me.soldier);
 	std::fprintf(stderr, "  static_av: gun yaw %.1f, gunner %.1f -> %.1f\n", yaw, before, after);
 	CHECK(std::fabs(yaw) > 5 && std::fabs(std::remainder(after - before - yaw, 360.0f)) < 1);
+}
+
+TEST(PlayerCamera_ReloadAndWalkerWithGameAssets)
+{
+	if (!gameDir()) return;
+	Garage g(gameDir());
+	if (!g.loaded) return;
+	g.files.setMountingAllowed(true);
+	std::string out;
+	g.console.run("ClientArchives.con", {}, out);
+	g.files.setMountingAllowed(false);
+	anim::AnimationSystems systems([&](const std::string& path, std::vector<uint8_t>& bytes) { return g.files.readFile(path, bytes); });
+	anim::registerAnimationConsoleMethods(g.console, systems);
+	g.console.run("Objects/Soldiers/Common/Animations/ValueHolders.inc", {}, out);
+	const auto load = [&](const std::string& path) { return systems.get(path, [&] { g.console.run(path, {}, out); }); };
+	const uint32_t walker = g.start("as_heavy_mech", {0, 4, 30});
+	g.world->setAnimationSystems(&systems, load);
+	CHECK(g.world->spawnPlayer(2));
+	PlayerCamera camera(*g.world, systems, load);
+	const auto step = [&](game::SoldierInput input = {}) {
+		g.world->setPlayerInput(input);
+		g.world->tick(1 / 30.0f);
+		camera.tick(1 / 30.0f);
+	};
+	for (int i = 0; i < 90; ++i) step();
+	camera.setAltFire(true);
+	step();
+	camera.setAltFire(false);
+	for (int i = 0; i < 30; ++i) step();
+	CHECK(camera.zoomLevel() > 0);
+	game::SoldierInput fire;
+	fire.fire = true;
+	for (int i = 0; i < 10; ++i) step(fire);
+	game::SoldierInput reload;
+	reload.reload = true;
+	step(reload);
+	CHECK(g.world->playerWeapon()->reloading());
+	CHECK(camera.zoomLevel() == 0);
+	for (int i = 0; i < 15; ++i) step();
+	const auto playing = camera.playing();
+	CHECK(std::find(playing.begin(), playing.end(), "reload") != playing.end());
+	for (int i = 0; i < 150; ++i) step();
+	CHECK(!g.world->playerWeapon()->reloading());
+	const auto finished = camera.playing();
+	CHECK(std::find(finished.begin(), finished.end(), "reload") == finished.end());
+	CHECK(g.enter(walker));
+	for (int i = 0; i < 90; ++i) step();
+	PlayerCamera::View inside;
+	CHECK(camera.view(inside, 16.0f / 9.0f));
+	PlayerCamera::Cockpit cockpit;
+	CHECK(camera.cockpit(cockpit) && cockpit.vehicle == walker && cockpit.subGeometry == 0);
+	CHECK(inside.position[1] > g.objects.find(walker)->position().y);
+	camera.toggleMode();
+	CHECK(!camera.insideView() && camera.mode() != game::camera::Mode::Inside);
+	CHECK(camera.selectView(1));
+	CHECK(camera.insideView());
+}
+
+TEST(PlayerCamera_TankZoomRetainsShortClicks)
+{
+	if (!gameDir()) return;
+	for (const char* mod : {"mods/bf2142", "mods/Project_Remaster_v17_Final"}) {
+		if (!std::ifstream(std::string(gameDir()) + "/" + mod + "/ServerArchives.con")) continue;
+		for (const char* name : {"eu_tank", "as_tank"}) {
+			Garage g(gameDir(), mod);
+			if (!g.loaded) return;
+			const auto tank = g.start(name, {0, 2, 6});
+			CHECK(g.enter(tank));
+			anim::AnimationSystems systems(nullptr);
+			PlayerCamera camera(*g.world, systems, nullptr);
+			const auto step = [&] {
+				g.world->setPlayerInput({});
+				g.world->tick(1 / 30.0f);
+				camera.tick(1 / 30.0f);
+			};
+			for (int i = 0; i < 60; ++i) step();
+			const float wide = camera.fieldOfView();
+			camera.setAltFire(true);
+			step();
+			camera.setAltFire(false);
+			for (int i = 0; i < 30; ++i) step();
+			const float zoomed = camera.fieldOfView();
+			std::fprintf(stderr, "  %s %s zoom level %d: fov %.4f -> %.4f\n", mod, name, camera.seatZoomLevel(), wide, zoomed);
+			CHECK(camera.seatZoomLevel() == 1);
+			CHECK(zoomed < wide * 0.75f);
+			camera.setAltFire(true);
+			step();
+			camera.setAltFire(false);
+			for (int i = 0; i < 30; ++i) step();
+			CHECK(camera.seatZoomLevel() == 0);
+			CHECK(near(camera.fieldOfView(), wide));
+			// A mouse press/release can occur between 30 Hz camera ticks.
+			camera.setAltFire(true);
+			camera.setAltFire(false);
+			for (int i = 0; i < 30; ++i) step();
+			CHECK(camera.seatZoomLevel() == 1);
+			CHECK(camera.fieldOfView() < wide * 0.75f);
+		}
+	}
+}
+
+// The gunships' pilot gun (MultiFireComp, fire.addFireRate 0 = single fire, mag 10, ammo.autoReload),
+// vanilla and Remaster alike (Remaster adds only a DefaultZoomComp, which the world never sees): a held
+// trigger fires one round, each fresh press one more, an emptied magazine reloads itself and the
+// next press fires again. Nothing else locks the gun.
+TEST(Vehicles_GunshipPilotGunFiresPerPressAndReloads)
+{
+	if (!gameDir()) {
+		return;
+	}
+	for (const char* mod : {"mods/bf2142", "mods/Project_Remaster_v17_Final"}) {
+		for (const char* name : {"as_ag", "us_ag"}) {
+			Garage g(gameDir(), mod);
+			if (!g.loaded || !g.templates.find(name)) {
+				continue;
+			}
+			const uint32_t v = g.start(name, {0, 4, 6});
+			CHECK(g.enter(v));
+			const int me = g.world->localPlayer();
+			const auto* gun = g.world->gun(v, 0);
+			CHECK(gun != nullptr);
+			if (!gun) {
+				continue;
+			}
+			CHECK(gun->fireMode() == 0);
+			const auto rounds = [&] {
+				game::GameWorld::PlayerInfo info;
+				g.world->playerInfo(me, info);
+				return static_cast<int>(info.gunShots);
+			};
+			g.run(8); // the weapon's draw
+			const int first = rounds();
+			game::SoldierInput hold;
+			hold.fire = true;
+			for (int i = 0; i < 60; ++i) {
+				g.world->setPlayerInput(hold);
+				g.world->tick(1 / 30.0f);
+			}
+			CHECK(rounds() == first + 1); // held: one round
+			g.world->setPlayerInput({});
+			g.run(1);
+			// Tapped through the whole magazine, its reload and on: a round every press.
+			int fired = 0;
+			for (int i = 0; i < 40; ++i) {
+				game::SoldierInput tap;
+				tap.fire = true;
+				const int before = rounds();
+				g.world->setPlayerInput(tap);
+				g.world->tick(1 / 30.0f);
+				fired += rounds() > before;
+				g.world->setPlayerInput({});
+				g.run(1.2f); // past the cooldown, and the reload when the magazine ran out
+			}
+			CHECK(fired == 40);
+		}
+	}
 }
