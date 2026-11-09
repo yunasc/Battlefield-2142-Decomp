@@ -757,6 +757,7 @@ bool FireArm::tick(float seconds, bool trigger, bool altTrigger)
 	if (fired && m_settings.thrown) {
 		m_hidden = true; // the launch (0x005e5720) puts the firearm away
 	}
+	m_firedThisTick = fired;
 	return fired;
 }
 
@@ -770,10 +771,16 @@ bool FireArm::fire(float seconds, bool trigger)
 	} else if (mode == kFireBurst && pressed && m_burstLeft <= 0) {
 		m_burstLeft = std::max(m_settings.burstSize, 1);
 	}
+	// The heat cools only while the fire component is idle: the weapon update
+	// (0x005c5d5e) calls the cooling (0x005c1fe0) for fire state 0 only, and
+	// state 4 (a round's interval) still holds on the tick that ends it, before
+	// the component's update. So a held trigger never cools.
+	const bool inRoundInterval = m_cooldown > 0;
+	m_sinceFire += seconds;
 	if (m_cooldown > 0) {
 		--m_cooldown;
 	}
-	if (m_reloadLeft > 0 || m_overheatLeft > 0) {
+	if (m_reloadLeft > 0 || overheated()) {
 		m_pending = false;
 		m_burstLeft = 0;
 	}
@@ -817,9 +824,11 @@ bool FireArm::fire(float seconds, bool trigger)
 		}
 		return false;
 	}
-	m_heat = std::max(0.0f, m_heat - m_settings.coolDownPerSec * seconds);
-	if (m_overheatLeft > 0) {
-		m_overheatLeft = std::max(0.0f, m_overheatLeft - seconds);
+	// heat = the heat at the last round - the time since it x coolDownPerSec.
+	if (!inRoundInterval) {
+		m_heat = std::max(0.0f, m_heatAtFire - m_settings.coolDownPerSec * m_sinceFire);
+	}
+	if (overheated()) {
 		return false;
 	}
 	// A magazine size of -1: no magazine (vehicle guns that heat up instead).
@@ -879,11 +888,14 @@ bool FireArm::fire(float seconds, bool trigger)
 	m_cooldown = m_settings.ticksBetweenShots();
 	m_busyUntilRelease = m_settings.busyUntilButtonRelease;
 	if (m_settings.heatAddWhenFire > 0) {
+		// The batch fire (0x005c3cb0): over 1 the heat becomes overheatPenalty
+		// and cools back down to 1 (the gun stops while it is 1 or more).
 		m_heat += m_settings.heatAddWhenFire;
-		if (m_heat >= 1) {
-			m_heat = 1;
-			m_overheatLeft = m_settings.overheatPenalty;
+		if (m_heat > 1) {
+			m_heat = m_settings.overheatPenalty;
 		}
+		m_heatAtFire = m_heat;
+		m_sinceFire = 0;
 	}
 	if (unlimited) {
 		return true;

@@ -244,6 +244,10 @@ ScriptValue ScriptBridge::objectCall(uint32_t id, const std::string& method, con
 		return ScriptValue::integer(object ? 1 : 0);
 	}
 	if (!object) {
+		// A removed object (a dead soldier leaving a CP trigger): the scripts iterate these, so an empty list.
+		if (method == "getOccupyingPlayers" || method == "getChildren") {
+			return ScriptValue::makeList({});
+		}
 		return ScriptValue::none();
 	}
 	const world::ObjectTemplate* t = object->objectTemplate();

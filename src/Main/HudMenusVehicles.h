@@ -532,6 +532,10 @@ struct VehicleHudInput {
 	float speed = 0;      // m/s
 	float climb = 0;      // m/s up
 	float altitude = 0;   // over the sea
+	// The controlled object's matrix y components (0x007a2b50: [edi+4] the
+	// right row's, [edi+0x24] the forward row's): VehicleBanking and
+	// AngleOfAttack, the gunships' horizon bar.
+	float rightY = 0, forwardY = 0;
 	std::vector<SeatDot> seats;
 	// The torque the HUD eases toward (the vehicle HUD's +0x2f4: nothing in
 	// BF2142.exe writes it, so 0) and the control object's sprint (its slots
