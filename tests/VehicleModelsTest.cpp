@@ -360,10 +360,30 @@ TEST(Vehicles_HoverTankThrustsAndStrafes)
 	CHECK(turned > 10);
 }
 
+// ObjectTemplate.setCollisionMesh and collisionMesh are one setter (both
+// executors, 0x0051c57b and 0x00530de1, call the active template's slot
+// 0x8c) for every class: the control points' flagpole, a Bundle with two
+// children naming its mesh only in its .tweak, is solid where it stands.
+TEST(GameWorld_SetCollisionMeshServesEveryTemplate)
+{
+	if (!gameDir()) return;
+	Garage g(gameDir());
+	const world::ObjectTemplate* pole = g.templates.find("flagpole");
+	CHECK(g.loaded && pole);
+	if (!g.loaded || !pole) return;
+	CHECK(pole->typeName() == "Bundle" && !pole->children().empty());
+	CHECK(pole->settings().count("collisionMesh") == 0 && pole->settings().count("setCollisionMesh") == 1);
+	const uint32_t id = g.start("flagpole", {20, 0, 20}, 0.1f);
+	physics::CollisionWorld::Hit hit {};
+	CHECK(g.world->staticCollision().raycast({10, 2, 20}, {30, 2, 20}, hit) && hit.owner == id);
+	std::fprintf(stderr, "  flagpole: met at x %.2f\n", 10 + hit.fraction * 20);
+}
+
 // The EU turret's yaw is on PIMouseLookX: the bundle input handler (0x00565180)
-// scales it by the EMP step, the barrel's pitch likewise; the cupola seat has
-// no armour of its own and keeps its input; the turret takes up again from
-// where it stopped when the EMP ends.
+// scales it by the EMP step (eu_tank: 2 steps, so x 1/2 at level 1, x 0 at
+// level 2), the barrel's pitch likewise. The cupola's bundles walk up past
+// EU_TANK_CupolaBase (no Armor component) to the tank's armour and take the
+// same step. The turret takes up again from where it stopped when the EMP ends.
 TEST(Vehicles_TankTurretYawFollowsEmpStep)
 {
 	if (!gameDir()) return;
@@ -418,7 +438,7 @@ TEST(Vehicles_TankTurretYawFollowsEmpStep)
 			}
 		}
 		for (int level : {0, 1, 2}) {
-			// The cupola seat (no armour of its own): not scaled by the hull's EMP.
+			// The cupola seat: its PCO has no armour, so the tank's EMP scales it.
 			Garage g(gameDir(), mod);
 			const auto tank = g.start("eu_tank", {0, 4, 8});
 			CHECK(g.enter(tank));
@@ -429,8 +449,9 @@ TEST(Vehicles_TankTurretYawFollowsEmpStep)
 			if (level > 0) {
 				CHECK(g.world->detonate("static_aa_missile_projectile", g.position(tank) + physics::Vec3 {0, 0, level == 1 ? 2.2f : 0.0f}));
 			}
+			CHECK(g.world->empLevel(tank) == level);
 			float before = 0, pitch = 0, after = 0;
-			if (!g.world->gunAim(tank, 1, before, pitch)) continue;
+			CHECK(g.world->gunAim(tank, 1, before, pitch));
 			game::SoldierInput look;
 			look.turn = 5;
 			for (int i = 0; i < 4; ++i) {
@@ -444,7 +465,9 @@ TEST(Vehicles_TankTurretYawFollowsEmpStep)
 		CHECK(std::fabs(turnedAt[0]) > 2.0f);
 		CHECK(std::fabs(turnedAt[1] - turnedAt[0] * 0.5f) < std::fabs(turnedAt[0]) * 0.15f);
 		CHECK(std::fabs(turnedAt[2]) < 0.2f);
-		CHECK(std::fabs(cupolaAt[1] - cupolaAt[0]) < 0.3f && std::fabs(cupolaAt[2] - cupolaAt[0]) < 0.3f);
+		CHECK(std::fabs(cupolaAt[0]) > 2.0f);
+		CHECK(std::fabs(cupolaAt[1] - cupolaAt[0] * 0.5f) < std::fabs(cupolaAt[0]) * 0.15f);
+		CHECK(std::fabs(cupolaAt[2]) < 0.2f);
 	}
 }
 
@@ -645,6 +668,59 @@ TEST(Vehicles_WalkerStandsWalksAndTurns)
 	CHECK(std::sqrt((after.x - ahead.x) * (after.x - ahead.x) + (after.z - ahead.z) * (after.z - ahead.z)) < 5);
 	// Upright all along (the keepUp couple).
 	CHECK(std::fabs(g.objects.find(mech)->rotation().y) < 10 && std::fabs(g.objects.find(mech)->rotation().z) < 10);
+}
+
+// A walker walking into a teammate's way. Its foot meets him as a road
+// kill (the collision event, 0x005a4690 -> 0x005a43c0: from 3 m/s while
+// the walker is the faster, (speed - 3) x speed x the mass factor), whose
+// game logic damage (0x004c0e40) goes through the friendly fire
+// (0x005b7290 with the walker's team, its 19th argument 0): retail kills a
+// teammate at the default sv.soldierFriendlyFire 100 and spares him at 0,
+// an enemy either way. (The soldier physics' own run-over and crush,
+// 0x006c2e50 / 0x006c48c0, would ignore the friendly fire, their 19th
+// argument 1, but the foot's contact comes first.) Returns whether he lived.
+static bool walkerOverASoldier(float friendlyFire, int team)
+{
+	Garage g(gameDir());
+	if (!g.loaded) {
+		return true;
+	}
+	const uint32_t mech = g.start("us_heavy_mech", {0, 4, 6});
+	g.world->setFriendlyFire({friendlyFire, friendlyFire, friendlyFire, friendlyFire});
+	CHECK(g.enter(mech));
+	const int other = g.world->addPlayer("Other", team, false);
+	CHECK(g.world->spawnSoldier(other));
+	game::GameWorld::PlayerInfo info;
+	g.world->playerInfo(other, info);
+	const physics::Vec3 at = g.position(mech);
+	// In the path of its left foot (between the feet it passes over him).
+	CHECK(g.world->setSoldierPosition(info.soldier, {at.x + 2, 0, at.z + 9}));
+	g.run(0.5f);
+	game::SoldierInput input;
+	input.throttle = 1;
+	bool alive = true;
+	float nearest = 1e9f;
+	for (int i = 0; i < 4 * 30 && alive; ++i) {
+		g.drive(input, 1 / 30.0f);
+		g.world->playerInfo(other, info);
+		alive = info.alive;
+		const physics::Vec3 p = g.position(mech);
+		nearest = std::min(nearest, std::hypot(p.x - info.position.x, p.z - info.position.z));
+	}
+	std::fprintf(stderr, "  friendly fire %.0f, team %d: the soldier %s (the walker came within %.2f m)\n", friendlyFire, team,
+		alive ? "lived" : "died", nearest);
+	CHECK(nearest < 2.5f); // it reached him
+	return alive;
+}
+
+TEST(Vehicles_FriendlyWalkerStepsOnATeammate)
+{
+	if (!gameDir()) {
+		return;
+	}
+	CHECK(!walkerOverASoldier(100, 2)); // a teammate, friendly fire on (the default)
+	CHECK(walkerOverASoldier(0, 2));    // a teammate, friendly fire off
+	CHECK(!walkerOverASoldier(0, 1));   // an enemy
 }
 
 // A walker left standing falls asleep like any node; its legs' update
@@ -4820,13 +4896,14 @@ TEST(Vehicles_SeatedKitMovesWithItsWearer)
 	CHECK(kit->hidden() == soldier->hidden());
 }
 
-// Check the real stationary AA at multiple headings, including both fire groups.
-TEST(Vehicles_StaticAAHeadingAndEmpMissileFlight)
+// Check the real stationary AA at one heading, both fire groups (a test per
+// heading below, so they run side by side: each case loads its own game).
+static void staticAAHeadingAndEmpMissileFlight(float heading)
 {
     if (!gameDir()) return;
     for (const char* mod : {"mods/bf2142", "mods/Project_Remaster_v17_Final"}) {
         if (!test::runs(mod)) continue;
-        for (float heading : {0.0f, 90.0f, 180.0f, -90.0f}) {
+        {
             for (bool missile : {false, true}) {
               for (float hullYaw : {0.0f, 90.0f}) {
                for (bool authoredSpread : {false, true}) {
@@ -4907,6 +4984,10 @@ TEST(Vehicles_StaticAAHeadingAndEmpMissileFlight)
     }
 }
 
+TEST(Vehicles_StaticAAHeading0AndEmpMissileFlight) { staticAAHeadingAndEmpMissileFlight(0.0f); }
+TEST(Vehicles_StaticAAHeading90AndEmpMissileFlight) { staticAAHeadingAndEmpMissileFlight(90.0f); }
+TEST(Vehicles_StaticAAHeading180AndEmpMissileFlight) { staticAAHeadingAndEmpMissileFlight(180.0f); }
+TEST(Vehicles_StaticAAHeadingMinus90AndEmpMissileFlight) { staticAAHeadingAndEmpMissileFlight(-90.0f); }
 
 // The walker's main cannon: the installed SimpleDeviationComp is low but
 // nonzero (minDev 0.25), and each actual shot must follow the posed camera
@@ -6400,7 +6481,8 @@ TEST(Vehicles_FavStaysUprightUnderSteeringAndBoost)
 // as main.cpp wires it (0x006d2fc0: the cell triangle's height and face
 // normal), against the port's former one (bilinear height, the normal from
 // heights a cell either side): no more time off the ground, no much rougher ride.
-TEST(Vehicles_DriveOverSuezHills)
+// A test per vehicle below (each drive loads its own garage).
+static void driveOverSuezHills(const char* vehicle)
 {
 	if (!gameDir()) return;
 	struct Drive {
@@ -6506,7 +6588,7 @@ TEST(Vehicles_DriveOverSuezHills)
 	stretches.resize(std::min<size_t>(stretches.size(), 4));
 	CHECK(stretches.size() == 4);
 	for (const auto& [rough, from] : stretches) {
-		for (const char* name : {"eu_fav", "eu_tank"}) {
+		for (const char* name : {vehicle}) {
 			const Drive was = drive(name, from, false), now = drive(name, from, true);
 			std::fprintf(stderr, "  %s at %.0f/%.0f (roughness %.1f): airborne %d -> %d, jolt %.2f (tick %d) -> %.2f (tick %d) m/s, mean %.3f -> %.3f, roll %.1f -> %.1f, pitch %.1f -> %.1f, distance %.0f -> %.0f m\n",
 				name, from.x, from.z, rough, was.airborne, now.airborne, was.jolt, was.joltTick, now.jolt, now.joltTick, was.meanJolt, now.meanJolt, was.roll, now.roll, was.pitch, now.pitch, was.distance, now.distance);
@@ -6520,6 +6602,9 @@ TEST(Vehicles_DriveOverSuezHills)
 		}
 	}
 }
+
+TEST(Vehicles_DriveOverSuezHills_EuFav) { driveOverSuezHills("eu_fav"); }
+TEST(Vehicles_DriveOverSuezHills_EuTank) { driveOverSuezHills("eu_tank"); }
 
 #ifdef BF2142_RENDER_TESTS
 TEST(FirstPerson_TickBlendPixelsOptIn)
@@ -7875,14 +7960,16 @@ TEST(Vehicles_ShepherdExitDropsAPodInFlight)
 	CHECK(g.world->playerVehicle() == nullptr);
 }
 
-// Missiles at each enemy vehicle from four sides: any that passes through.
-TEST(Vehicles_MissilesHitEveryEnemyVehicle)
+// Missiles at an enemy vehicle from four sides: any that passes through (a
+// test per vehicle below, so they run side by side: each shot loads its own
+// game).
+static void missilesHitEnemyVehicle(const char* name)
 {
 	if (!gameDir()) {
 		return;
 	}
 	int through = 0;
-	for (const char* name : {"as_fav", "eu_fav", "as_tank", "eu_tank", "as_apc_pods", "eu_apc_pods", "as_heavy_mech", "us_heavy_mech", "eu_ifv", "as_ag", "us_ag", "as_hov_light"}) {
+	{
 		for (const char* missile : {"unl_av_missile", "eu_av_missile", "as_av_missile"}) {
 			for (int side = 0; side < 4; ++side) {
 				Garage g(gameDir());
@@ -7906,6 +7993,19 @@ TEST(Vehicles_MissilesHitEveryEnemyVehicle)
 	}
 	std::fprintf(stderr, "  %d passes\n", through);
 }
+
+TEST(Vehicles_MissilesHitEnemyAsFav) { missilesHitEnemyVehicle("as_fav"); }
+TEST(Vehicles_MissilesHitEnemyEuFav) { missilesHitEnemyVehicle("eu_fav"); }
+TEST(Vehicles_MissilesHitEnemyAsTank) { missilesHitEnemyVehicle("as_tank"); }
+TEST(Vehicles_MissilesHitEnemyEuTank) { missilesHitEnemyVehicle("eu_tank"); }
+TEST(Vehicles_MissilesHitEnemyAsApcPods) { missilesHitEnemyVehicle("as_apc_pods"); }
+TEST(Vehicles_MissilesHitEnemyEuApcPods) { missilesHitEnemyVehicle("eu_apc_pods"); }
+TEST(Vehicles_MissilesHitEnemyAsHeavyMech) { missilesHitEnemyVehicle("as_heavy_mech"); }
+TEST(Vehicles_MissilesHitEnemyUsHeavyMech) { missilesHitEnemyVehicle("us_heavy_mech"); }
+TEST(Vehicles_MissilesHitEnemyEuIfv) { missilesHitEnemyVehicle("eu_ifv"); }
+TEST(Vehicles_MissilesHitEnemyAsAg) { missilesHitEnemyVehicle("as_ag"); }
+TEST(Vehicles_MissilesHitEnemyUsAg) { missilesHitEnemyVehicle("us_ag"); }
+TEST(Vehicles_MissilesHitEnemyAsHovLight) { missilesHitEnemyVehicle("as_hov_light"); }
 
 // Where a round from the side meets the EU FAV: a grid of heights and offsets.
 TEST(Vehicles_EuFavSideGrid)
@@ -10031,6 +10131,38 @@ TEST(Vehicles_WalkerStandsOnADeck)
 	CHECK(g.world->bodyAsleep(mech));
 }
 
+// The FAVs driving along Suez_Canal's big bridge take no collision damage.
+// Their wheels' probes on the deck (0x006bb050) carry the probe vertex's
+// material, the wheels' Rubber 4550 (mapMaterial 3), whose cell against the
+// deck's 21 / 78 has damageMod 0. With the template's material (0) instead,
+// the cell's damageMod 1 cost a FAV about 30 hit points per bump at speed.
+TEST(Vehicles_FavDrivesAlongADeckUnhurt)
+{
+	if (!gameDir()) {
+		return;
+	}
+	for (const char* name : {"eu_fav", "as_fav"}) {
+		Garage g(gameDir());
+		if (!g.loaded || !g.templates.find("bc_big_bridge_a") || !g.templates.find(name)) {
+			return;
+		}
+		g.objects.create(g.templates.find("bc_big_bridge_a"), {0, 20, 0}, {90, 0, 0});
+		const uint32_t fav = g.start(name, {0, 22, 0}, 3);
+		CHECK(g.enter(fav));
+		const float before = g.world->hitPoints(fav);
+		const physics::Vec3 a = g.position(fav);
+		game::SoldierInput go;
+		go.throttle = 1;
+		g.drive(go, 4);
+		const physics::Vec3 b = g.position(fav);
+		std::fprintf(stderr, "  %s: %.1f m along the deck at %.2f m, hit points %.1f -> %.1f\n", name, b.z - a.z, b.y,
+			before, g.world->hitPoints(fav));
+		CHECK(b.z - a.z > 40);
+		CHECK(b.y > 15); // still on the bridge (its deck 20.97 at rest at the start)
+		CHECK(g.world->hitPoints(fav) == before);
+	}
+}
+
 // Suez_Canal's industrial bridge (-512/47/-36): a walker stands on its deck
 // on the legs' sphere alone, its hull's vehicle LOD box (1.9 m under its
 // origin) above the deck's box. The legs object is a mover of its own with
@@ -10827,7 +10959,8 @@ TEST(Vehicles_ParachuteLandsOnTheWater)
 #ifdef BF2142_RENDER_TESTS
 // The Titan's wreck (0x00652380): frames through gpm_ti's 25 s before the
 // round's end, the armour explosions (addArmorEffect -1 .. -36) and the core
-// explosion's flash (-38 %) over the hull. Bots running: 3 % a second.
+// explosion's flash (-38 %) over the hull. Bots running in gpm_ti: 1 % a
+// second (0x00652380's x 3 is the single-player and co-op modes' alone).
 TEST(Titan_WreckSequencePixelsOptIn)
 {
 	const char* output = std::getenv("BF2142_RENDER_TEST_DIR");

@@ -3,6 +3,7 @@
 #include "BundledShadow.h"
 #include "DistanceFade.h"
 #include "OvergrowthLod.h"
+#include "ParticleFog.h"
 #include "Enhanced/EnhancedMath.h"
 #include "MeshLights.h"
 #include "Scene/EnhancedSettings.h"
@@ -1069,7 +1070,7 @@ const LevelRenderer::AnimatedUVLook& LevelRenderer::animatedUVLook(const world::
 // LandingGear; Rotor and Spring don't), a part on a bone (boneIndex,
 // template slot 0xc8, not -1) or a free camera. The others keep their
 // tick's place in their (blended) parent.
-static bool blendsBetweenTicks(const world::ObjectTemplate& t)
+static bool templateBlendsBetweenTicks(const world::ObjectTemplate& t)
 {
 	static const char* const kTypes[] = {"Soldier", "RotationalBundle", "Camera", "Engine", "FloatingBundle", "Wing",
 		"LandingGear", "FreeCamera"};
@@ -1094,7 +1095,7 @@ static void markBlendedParts(const LevelSources& sources, const world::ObjectTem
 		const int index = part != t->settings().end() ? std::atoi(part->second.c_str()) : -1;
 		const bool isPart = index > 0 && static_cast<size_t>(index) < blended.size();
 		if (isPart) {
-			blended[static_cast<size_t>(index)] = blendsBetweenTicks(*t);
+			blended[static_cast<size_t>(index)] = templateBlendsBetweenTicks(*t);
 			parents[static_cast<size_t>(index)] = parent;
 		}
 		markBlendedParts(sources, *t, blended, parents, isPart ? index : parent, depth + 1);
@@ -1119,7 +1120,7 @@ const std::vector<LevelRenderer::PartChild>& LevelRenderer::partChildren(const L
 			const auto part = t->settings().find("geometryPart");
 			const int index = part != t->settings().end() ? std::atoi(part->second.c_str()) : -1;
 			c.part = index > 0 && index < kMaxMeshParts ? index : -1;
-			c.blends = blendsBetweenTicks(*t);
+			c.blends = templateBlendsBetweenTicks(*t);
 			const AnimatedUVLook& look = animatedUVLook(*t);
 			c.keepsTurn = look.rotateUV && t->typeName() == "Spring";
 			const std::string name = lower(child.name);
@@ -1154,7 +1155,7 @@ void LevelRenderer::collectParts(const LevelSources& sources, const world::Objec
 			const AnimatedUVLook& look = animatedUVLook(*childTemplate);
 			uvLook = look.settings.any() ? &look : nullptr;
 			keepsTurn = look.rotateUV && childTemplate->typeName() == "Spring";
-			blends = blendsBetweenTicks(*childTemplate);
+			blends = templateBlendsBetweenTicks(*childTemplate);
 			const auto part = childTemplate->settings().find("geometryPart");
 			const int index = part != childTemplate->settings().end() ? std::atoi(part->second.c_str()) : -1;
 			partIndex = index > 0 && index < kMaxMeshParts ? index : -1;
@@ -2244,19 +2245,9 @@ void LevelRenderer::syncObjects(TickBlend blend)
 		m_gpu.flushUploads();
 	}
 	// Each object between its last two ticks (TickBlend.h); a new one where it is.
-	for (auto it = m_objectBlend.begin(); it != m_objectBlend.end();) {
-		it = objects.find(it->first) ? std::next(it) : m_objectBlend.erase(it);
-	}
+	pruneObjectBlends(m_objectBlend, [&objects](uint32_t id) { return objects.find(id) != nullptr; });
 	for (const auto& object : objects.objects()) {
-		const Mat4 now = objectTransform(object->position(), object->rotation());
-		const auto [it, added] = m_objectBlend.try_emplace(object->id(), ObjectBlend {now, now, now});
-		ObjectBlend& o = it->second;
-		if (blend.ticked && !added) {
-			o.previous = o.current;
-		}
-		o.current = now;
-		o.drawn = tickBlendJumped(o.previous.at(3, 1), o.current.at(3, 1)) ? o.current
-			: blendTransform(o.previous, o.current, blend.alpha);
+		sampleObjectBlend(m_objectBlend, object->id(), objectTransform(object->position(), object->rotation()), blend);
 	}
 	// The collision parts holding decals: children of their objects, drawn
 	// between their ticks in them (0x0043ef30 over the tree).
@@ -2926,7 +2917,7 @@ void LevelRenderer::buildMenu(float seconds)
 // Two triangles per particle, uploaded for this frame. The managers are
 // told the camera, the water, the wind and the settings first (what their
 // next update reads: the view distance, the distance LOD).
-void LevelRenderer::buildParticles(const Camera& camera)
+void LevelRenderer::buildParticles(const Camera& camera, float aspect)
 {
 	if (m_sources) {
 		// The manager's settings with VideoSettings' effects row over them
@@ -2948,7 +2939,7 @@ void LevelRenderer::buildParticles(const Camera& camera)
 				if (const terrain::Heightmap* heights = m_sources->heightmaps.primary(); heights && heights->loaded()) {
 					manager->setGround([heights](float x, float z) { return heights->heightAt(x, z); });
 				}
-				manager->setCamera({camera.position.x, camera.position.y, camera.position.z}, std::tan(camera.fovY / 2));
+				manager->setCamera({camera.position.x, camera.position.y, camera.position.z}, camera.fovY, aspect);
 			}
 		}
 	}
@@ -3128,10 +3119,13 @@ void LevelRenderer::buildParticleBuffer(std::initializer_list<const effects::Eff
 					vertices.push_back(v);
 				}
 			}
-			if (!groups.empty() && groups.back().texture == image && groups.back().additive == additive && !groups.back().fogged) {
+			// Normal-blend sprites fog, additive ones don't (RendDX9 0x1012f750, ParticleFog.h).
+			const bool fogged = spriteGroupFogged(additive, m_particleSettings.particleSystemShaderQuality);
+			if (!groups.empty() && groups.back().texture == image && groups.back().additive == additive
+				&& !groups.back().repeat && groups.back().fogged == fogged) {
 				groups.back().vertexCount += static_cast<uint32_t>(vertices.size()) - first;
 			} else {
-				groups.push_back({image, additive, first, static_cast<uint32_t>(vertices.size()) - first});
+				groups.push_back({image, additive, first, static_cast<uint32_t>(vertices.size()) - first, false, nullptr, fogged});
 			}
 		});
 		// Non-screen-aligned quads and trails: placed already (a negative
@@ -3142,9 +3136,12 @@ void LevelRenderer::buildParticleBuffer(std::initializer_list<const effects::Eff
 				if (!image) {
 					return;
 				}
+				// Retail's Trail.fx / NonScreenAlignedParticles.fx: always
+				// normal-blend and fogged, whatever the template's particleType (ParticleFog.h).
+				const PlacedParticleDraw drawn = placedGroupDraw(additive);
 				const uint32_t first = static_cast<uint32_t>(vertices.size());
 				for (const effects::WorldVertex& w : triangles) {
-					const std::array<float, 3> light = lightAt(w.position, w.lightMapOffset, additive);
+					const std::array<float, 3> light = lightAt(w.position, w.lightMapOffset, drawn.additive);
 					Vertex v {};
 					v.position[0] = w.position.x;
 					v.position[1] = w.position.y;
@@ -3159,7 +3156,7 @@ void LevelRenderer::buildParticleBuffer(std::initializer_list<const effects::Eff
 					v.part = -1;
 					vertices.push_back(v);
 				}
-				groups.push_back({image, additive, first, static_cast<uint32_t>(vertices.size()) - first, true, nullptr, !additive});
+				groups.push_back({image, drawn.additive, first, static_cast<uint32_t>(vertices.size()) - first, true, nullptr, drawn.fogged});
 			});
 	}
 	if (weather && m_sources && m_sources->rain) {
@@ -3777,7 +3774,7 @@ void LevelRenderer::drawParticles(SDL_GPUCommandBuffer* commands, SDL_GPURenderP
 			const bool shade = shadowed && !group.additive;
 			SDL_BindGPUGraphicsPipeline(pass, shade ? m_gpu.enhancedPipelines().particle : m_gpu.particlePipeline(group.additive));
 			SDL_PushGPUVertexUniformData(commands, 0, &uniforms, sizeof(uniforms));
-			fog.material[3] = (group.fogged ? 1.0f : 0.0f) + (group.additive ? 2.0f : 0.0f); // particle.frag: fixed-function fog, additive mask
+			fog.material[3] = particleMaterialFlags(group.fogged, group.additive); // particle.frag: fixed-function fog, additive mask
 			SDL_PushGPUFragmentUniformData(commands, 0, &fog, sizeof(fog));
 			if (shade) {
 				SDL_PushGPUFragmentUniformData(commands, 1, &m_enh.shadows, sizeof(m_enh.shadows));
@@ -4564,7 +4561,7 @@ void LevelRenderer::draw(SDL_GPUCommandBuffer* commands, SDL_GPUTexture* color, 
 	updateUndergrowth(camera);
 	{
 		FrameStats::Scope timed(FrameStats::Particles);
-		buildParticles(camera);
+		buildParticles(camera, static_cast<float>(target.height) / static_cast<float>(std::max(target.width, 1u)));
 	}
 	// The mesh particles' meshes, loaded before the pass begins.
 	if (m_sources) {

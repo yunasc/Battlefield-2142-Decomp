@@ -5033,18 +5033,22 @@ TEST(GameWorld_FriendlyFireScaling)
 	CHECK(enemy > 1 && std::fabs(half - enemy * 0.5f) < 0.01f && none == 0);
 }
 
-// 0x005b7290 scales damage by team only for a victim with a PlayerControlObject
-// up its tree: a deployed hub (GenericProjectile) is hurt by its own team in full.
+// 0x005b7290 scales damage by team only when the victim's root (0x006f1d70)
+// or a parent of it answers interface 0xc4c5 (PlayerControlObject, Parachute,
+// Soldier, LadderContainer, FreeCamera): a deployed hub (GenericProjectile),
+// a supply crate or a teamed destructible (SimpleObject, Bundle) is hurt by
+// its own team in full, a PlayerControlObject at the server's vehicle
+// percentage (0 here).
 TEST(GameWorld_FriendlyFireSparesNoHub)
 {
-	const auto lost = [](int attackerTeam) {
+	const auto lost = [](const char* type, int attackerTeam) {
 		Range range;
 		range.collisionTemplates.add("hub_mesh", boxMesh(0.2f));
 		world::ObjectTemplate* blast = range.templates.create("GenericProjectile", "blast");
 		blast->components().push_back("DefaultDetonationComp");
 		blast->settings()["detonation.explosionDamage"] = "40";
 		blast->settings()["detonation.explosionMaterial"] = "69";
-		auto* deployed = range.templates.create("GenericProjectile", "hub_deployed");
+		auto* deployed = range.templates.create(type, "hub_deployed");
 		makeMobile(*deployed, "hub_mesh");
 		deployed->settings()["armor.maxHitPoints"] = "100";
 		deployed->settings()["armor.hitPoints"] = "100";
@@ -5060,9 +5064,12 @@ TEST(GameWorld_FriendlyFireSparesNoHub)
 		CHECK(range.world->detonate("blast", {0.5f, 10, 0}, attacker));
 		return 100 - range.world->hitPoints(hub->id());
 	};
-	const float enemy = lost(1), own = lost(2);
-	std::fprintf(stderr, "  hub: %.2f from an enemy, %.2f from its own team at 0%% friendly fire\n", enemy, own);
-	CHECK(enemy > 1 && std::fabs(own - enemy) < 0.01f);
+	for (const char* type : {"GenericProjectile", "SupplyObject", "SimpleObject", "Bundle", "PlayerControlObject"}) {
+		const float enemy = lost(type, 1), own = lost(type, 2);
+		std::fprintf(stderr, "  %s: %.2f from an enemy, %.2f from its own team at 0%% friendly fire\n", type, enemy, own);
+		CHECK(enemy > 1);
+		CHECK(std::string(type) == "PlayerControlObject" ? own == 0 : std::fabs(own - enemy) < 0.01f);
+	}
 }
 
 // hasOnTimeEffect (0x005b62a0): a fused round whose time runs out goes off
@@ -6325,16 +6332,28 @@ TEST(GameWorld_VehicleInReachForTheHelp)
 }
 
 // The wreck (0x00652380): timeToStayAsWreck (20 by default) drains its
-// armour to -wreckHitPoints; with the AI running three times as fast, so a
-// 3 s wreck goes after 1 s.
+// armour to -wreckHitPoints; three times as fast with the AI running in a
+// single-player or co-op mode (AIDLL's slot 0x20 false: the level load's
+// init, 0x004af290, gives it !(sp1 / gpm_sp / gpm_coop)), so a 3 s wreck
+// goes after 1 s there. With bots in conquest or Titan mode, or without the
+// AI, it takes the full 3 s.
 TEST(GameWorld_WreckDrainsFasterWithBots)
 {
-	for (int ai = 0; ai < 2; ++ai) {
+	struct Leg {
+		const char* mode;
+		bool ai;
+		bool fast;
+	};
+	for (const Leg leg : {Leg {"gpm_sp", false, false}, Leg {"gpm_sp", true, true}, Leg {"sp1", true, true},
+			 Leg {"gpm_coop", true, true}, Leg {"gpm_cq", true, false}, Leg {"gpm_ti", true, false}}) {
 		ExitRange range;
 		range.jeep->settings()["armor.maxHitPoints"] = "100";
 		range.jeep->settings()["armor.wreckHitPoints"] = "50";
 		range.jeep->settings()["armor.timeToStayAsWreck"] = "3";
-		range.world->setAiRunning(ai != 0);
+		range.world->setGameMode(leg.mode);
+		range.world->setAiRunning(leg.ai);
+		CHECK(range.world->wreckDrainsFast() == leg.fast);
+		const int ai = leg.ai;
 		range.id = range.objects.create(range.jeep, {0, 1, 40})->id();
 		range.world->tick(1 / 30.0f);
 		range.world->applyDamage(range.id, 1000, -1);
@@ -6343,8 +6362,8 @@ TEST(GameWorld_WreckDrainsFasterWithBots)
 			range.world->tick(1 / 30.0f);
 			++ticks;
 		}
-		std::fprintf(stderr, "  ai %d: the wreck went after %d ticks\n", ai, ticks);
-		CHECK(ai ? (ticks >= 29 && ticks <= 32) : (ticks >= 89 && ticks <= 92));
+		std::fprintf(stderr, "  %s, ai %d: the wreck went after %d ticks\n", leg.mode, ai, ticks);
+		CHECK(leg.fast ? (ticks >= 29 && ticks <= 32) : (ticks >= 89 && ticks <= 92));
 	}
 }
 

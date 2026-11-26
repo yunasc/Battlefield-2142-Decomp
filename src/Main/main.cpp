@@ -24,6 +24,7 @@
 #include "Game/GameLogic.h"
 #include "Game/KitUnlocks.h"
 #include "Hud/Hud.h"
+#include "Hud/Widescreen.h"
 #include "Input/ControlMap.h"
 #include "Input/GameControllers.h"
 #include "Net/Fesl.h"
@@ -75,6 +76,7 @@
 #include "MapOrderMarker.h"
 #include "MenuBindings.h"
 #include "MenuGameState.h"
+#include "MenuSingleplayBots.h"
 #include "SettingsObjects.h"
 #include "PlayerCamera.h"
 #include "EndOfRoundBindings.h"
@@ -169,6 +171,7 @@ struct Options {
 	std::string drive;           // --drive <vehicle>: put one before the player and drive it
 	std::string kit;             // --kit <name|n>: the player's kit (the team's kit list, by name or from 1)
 	int bots = 0;                // --bots N: AI players, alternately PAC and EU
+	bool menuBotTarget = false;  // enhanced.singleplayBotCount set `bots`: AIDefault.ai's setMaxNBots 16 doesn't cap them
 	int simulate = 0;            // --simulate N: run N seconds headless, then show the scores
 	bool enhanced = false;       // --enhanced: start with enhanced.enabled 1 (Scene/EnhancedSettings.h)
 	std::string language = "English"; // --language: the registry's Language (0x00405360), strings.csv's column
@@ -3254,6 +3257,12 @@ int main(int argc, char** argv)
 		options.level = map.level;
 		options.gameMode = map.gameMode;
 		options.mapSize = map.size;
+		if (session.startedGame && session.startedGame->playerTarget > 0) {
+			// enhanced.singleplayBotCount: this map's own count (playersForMap).
+			const dice::hfe::menu::MapPlayers players = dice::hfe::menu::playersForMap(*session.startedGame, map.size);
+			options.bots = players.bots;
+			options.maxPlayers = players.maxPlayers;
+		}
 		std::printf("next map: %s (%s, %d)\n", options.level.c_str(), options.gameMode.c_str(), options.mapSize);
 	}
 }
@@ -3613,6 +3622,21 @@ int runGame(Options& options, Session& session)
 	scene::EnhancedSettings enhancedSettings;
 	enhancedSettings.enabled = options.enhanced;
 	scene::registerEnhancedConsoleMethods(console, enhancedSettings);
+	// enhanced.singleplayAllModes and enhanced.singleplayBotCount for the
+	// menu's singleplayer page. The menu outlives these settings, so its
+	// checks go as runGame returns.
+	const auto menuAllModes = [&enhancedSettings] { return enhancedSettings.enabled && enhancedSettings.singleplayAllModes; };
+	const auto menuBotCount = [&enhancedSettings] { return enhancedSettings.enabled && enhancedSettings.singleplayBotCount; };
+	struct MenuAllModesReset {
+		Session& session;
+		~MenuAllModesReset()
+		{
+			if (session.menuBindings) {
+				session.menuBindings->singleplayAllModes = nullptr;
+				session.menuBindings->singleplayBotCount = nullptr;
+			}
+		}
+	} menuAllModesReset {session};
 	// The launcher's Enhanced options, before the audio, the renderer and the
 	// bots read them (--console runs only once a round has started).
 	for (const std::string& line : options.enhancedSettings) {
@@ -3904,25 +3928,16 @@ int runGame(Options& options, Session& session)
 	// in authored order. Do not promote all HUD text or alter ready state.
 	hudManager.repairSupplyLabelOrder();
 	// enhanced.hudWidescreen: the same 4:3 HUD for a mod without the patch,
-	// with HudRotation.con's 120 moves of the sides. The commander screen,
-	// which Remaster also re-cut into left/right/middle, stays centred.
-	if (enhancedSettings.enabled && enhancedSettings.hudWidescreen && hudXScale == 1.0f) {
-		hudXScale = 12.0f / 16.0f;
-		for (const char* name : {"BottomLeftStaticHud", "SquadInfo", "SquadOrderInfo", "IngameChat", "IngameChatInput", "PlayerNames"}) {
-			hudManager.shiftNode(name, -120);
-		}
-		for (const char* name : {"BottomRightStaticHud", "MinSizeAlpha", "Minimap", "ItemSelectionHud"}) {
-			hudManager.shiftNode(name, 120);
-		}
-		// The full-screen gunner frames and screen filters, as Remaster's
-		// Menu_server_hudfix.zip re-cuts them (0 0 1024 1024 -> -134 0 1367
-		// 1024), so the 12/16 squeeze still covers a wide screen.
-		for (const char* name : {"IFVGunnerHudFrame", "IFVRocketHudFrame", "LightHoverHeatHudFilter", "EuGunshipCoFilter",
-				 "EUGunshipHeatHudFilter", "GunshipCoFilter", "GunshipHeatHudFilter", "TankEuGunnerHudFrame",
-				 "TankGunnerHudFrame", "GunEuFrame", "GunPacFrame"}) {
-			hudManager.spanNode(name, -134, 1367);
-		}
-		std::printf("native HUD: enhanced widescreen, x scaled by 12/16, sides moved 120\n");
+	// squeezed for the window's own aspect, with its sides and gunner frames
+	// laid out to match (hud::widescreenLayout: the hudfix's 12/16, 120 and
+	// -134..1233 at 16:9). The window hands its size over each frame it
+	// draws (viewer.windowSize), so a resize re-lays the HUD. The commander
+	// screen, which Remaster also re-cut into left/right/middle, stays
+	// centred. With the hudfix installed its fixed 16:9 layout stands.
+	const bool hudWidescreen = enhancedSettings.enabled && enhancedSettings.hudWidescreen && hudXScale == 1.0f;
+	hud::WidescreenLayout hudWidescreenApplied; // the authored HUD to start
+	if (hudWidescreen) {
+		std::printf("native HUD: enhanced widescreen, x scaled for the window's aspect\n");
 	}
 	// The name tags' icons and bars (the HUD manager's set-up, 0x0075cfa0).
 	run("Menu/Nametag/nametags.con");
@@ -4201,6 +4216,8 @@ int runGame(Options& options, Session& session)
 	};
 	if (session.menuBindings) {
 		session.menuBindings->setControls(&controls);
+		session.menuBindings->singleplayAllModes = menuAllModes;
+		session.menuBindings->singleplayBotCount = menuBotCount;
 	}
 	if (session.menuBindings) {
 		session.menuBindings->onSettingsApplied = applySettings;
@@ -4257,6 +4274,14 @@ int runGame(Options& options, Session& session)
 		menuBindings->setStatsFile(dice::hfe::menu::MenuBindings::defaultStatsFile());
 		menuBindings->onQuit = [&session]() { session.menuQuit = true; };
 		menuBindings->onLog = [](const std::string& line) { std::printf("menu: %s\n", line.c_str()); };
+		menuBindings->singleplayAllModes = menuAllModes;
+		menuBindings->singleplayBotCount = menuBotCount;
+		// The singleplayer page's players slider (MenuSingleplayBots.h).
+		menu.setTickHook([&session](ui::Player& player) {
+			if (session.menuBindings) {
+				dice::hfe::menu::updateSingleplayBotCount(player, *session.menuBindings);
+			}
+		});
 		menuBindings->setMaps(scanMenuMaps(options));
 		// The Mod page's mods (ModInfo, each mods/<name>/Mod.desc).
 		menuBindings->setMods(dice::hfe::menu::MenuBindings::findMods(options.gameDir), options.modPath);
@@ -4417,9 +4442,13 @@ int runGame(Options& options, Session& session)
 		options.level = map.level;
 		options.gameMode = map.gameMode;
 		options.mapSize = map.size;
-		options.maxPlayers = startedGame->maxPlayers;
-		// The bots fill the server up to their number, the player included.
-		options.bots = std::max(0, startedGame->bots - (startedGame->botsIncludeHumans ? 1 : 0));
+		// The bots fill the server up to their number, the player included;
+		// with enhanced.singleplayBotCount up to the page's target, at most
+		// the map's size, again for each map (the playlist's "next map").
+		const dice::hfe::menu::MapPlayers players = dice::hfe::menu::playersForMap(*startedGame, map.size);
+		options.maxPlayers = players.maxPlayers;
+		options.bots = players.bots;
+		options.menuBotTarget = startedGame->playerTarget > 0;
 		options.botSkill = startedGame->botSkill;
 		options.ticketRatio = startedGame->ticketRatio;
 		options.timeLimit = startedGame->timeLimit;
@@ -4696,6 +4725,11 @@ int runGame(Options& options, Session& session)
 		if (options.botSkill >= 0) {
 			botSettings.skill = options.botSkill;
 		}
+		if (options.menuBotTarget) {
+			// enhanced.singleplayBotCount: AIDefault.ai's setMaxNBots 16 would
+			// leave the bots past 16 unactivated (BotManager's refusal).
+			botSettings.maxBots = std::max(botSettings.maxBots, options.bots);
+		}
 		std::printf("bots: skill %.2f, Fire weight %.1f\n", botSettings.skill, botSettings.modifier("Fire"));
 	} else if (!session.client) {
 		// A server without bots still runs the AI's multiplayer settings
@@ -4918,6 +4952,7 @@ int runGame(Options& options, Session& session)
 		round.setSoftLanding(&enhancedSettings.enabled, &enhancedSettings.softLanding);
 		round.setTitanKitFloors(&enhancedSettings.enabled, &enhancedSettings.titanKitFloors);
 		round.setSprintStrafe(&enhancedSettings.enabled, &enhancedSettings.sprintStrafe);
+		round.setSquadOrderPointsOffline(&enhancedSettings.enabled, &enhancedSettings.squadOrderPoints);
 		// The players as the HUD has them (HudWorld.h): a joined game's,
 		// the server's (g_remoteHud, set while one runs), else the round's.
 		const auto hudPlayer = [&round](int id, game::GameWorld::PlayerInfo& out) {
@@ -7625,9 +7660,20 @@ int runGame(Options& options, Session& session)
 				playerCamera.setAltFire(act.altFire);
 				remoteLook.fire = act.fire;
 				remoteLook.stance = act.pose == game::SoldierPose::Prone ? 2 : act.pose == game::SoldierPose::Crouch ? 1 : 0;
-				// A scripted pose is a latched one: the wire takes a lie press when it changes.
-				act.lieKey = (act.pose == game::SoldierPose::Prone) != actProne;
-				actProne = act.pose == game::SoldierPose::Prone;
+				// A scripted pose is a latched one: the lie key (a toggle on its press)
+				// is held while the pose asked for and the soldier's differ. The
+				// soldier's is the server's (our ghost's pose); before it has sent
+				// one, the last asked for. A refused press stays held, so it can't
+				// toggle twice.
+				const bool wantProne = act.pose == game::SoldierPose::Prone;
+				{
+					const net::ControlObjectRecord& control = client.world().controlObject();
+					const net::RemoteObject* own = control.vehicle == 0 ? client.world().object(control.ghost) : nullptr;
+					if (own && own->kind == net::NetworkableKind::Soldier) {
+						actProne = own->pose == static_cast<int>(game::SoldierPose::Prone);
+					}
+				}
+				act.lieKey = wantProne != actProne;
 				client.setInput(net::playerInputFrom(act, remoteActionsPitch));
 				remoteActionsPitch = act.aimPitch;
 			}
@@ -8869,8 +8915,8 @@ int runGame(Options& options, Session& session)
 			// navigation mesh) has no bots.
 			std::printf("no bots on this level (it has no AI navigation data)\n");
 		}
-		// The AI runs on this server (AIDLL's interface; a wreck's armour
-		// drains three times as fast, 0x00652380).
+		// The AI runs on this server (AIDLL's interface; in sp1, gpm_sp and
+		// gpm_coop a wreck's armour drains three times as fast, 0x00652380).
 		round.setAiRunning(bots.enabled() && options.bots > 0);
 		if (bots.enabled() && options.bots > 0) {
 			bots.prepareTitanGrids(); // the Titans stand after the first step
@@ -10610,6 +10656,13 @@ int runGame(Options& options, Session& session)
 		ViewerOptions viewer;
 		viewer.screenshot = options.screenshot;
 		viewer.camera = options.camera;
+		if (hudWidescreen) {
+			viewer.windowSize = [&](int width, int height) {
+				const hud::WidescreenLayout layout = hud::widescreenLayout(width, height);
+				hud::applyWidescreenLayout(hudManager, hudWidescreenApplied, layout);
+				sources.hudXScale = layout.xScale;
+			};
+		}
 		if (viewer.screenshot.empty()) {
 			// A window draws frames: the particles move by them, as RendDX9's (EffectManager::frame).
 			round.setEffectsPerFrame(true);

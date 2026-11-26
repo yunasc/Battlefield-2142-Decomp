@@ -57,6 +57,7 @@ to their owners and still need your own copy of the game.
 source/Battlefield 2142/   your game install, BF2142 1.51 + OpenSpy patch (git-ignored)
 build/                     build trees, Ghidra project, analysis output (git-ignored)
 reference/OpenBattlefield2/ the Refractor 2 reference implementation (git-ignored clone)
+launcher/                  a Tauri + Leptos app that builds and runs the port (development)
 src/                       the rewrite, laid out like DICE's Code/BF2 tree
   Platform/                OS abstraction (dialogs, dynamic libraries, ...)
   Memory/                  dice::hfe::memory (was Memory.dll)
@@ -113,17 +114,20 @@ brew install sdl3 glslang spirv-cross        # for the renderer (optional)
 brew install python@3                         # for the game-mode scripts (optional)
 # put your BF2142 1.51 install (OpenSpy-patched) at "source/Battlefield 2142"
 
-# Native (macOS) build and tests (ASan/UBSan enabled)
-cmake -S . -B build/native -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined"
-ninja -C build/native && build/native/tests/bf2142_tests
-# tests run in parallel processes, one per core (the whole suite takes about
-# 16 min); -j N runs N at a time; a name runs only the tests containing it
+# Release build: for playing and for the tests
+cmake -S . -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release
+ninja -C build/release
+BF2142_GAME_DIR="$PWD/source/Battlefield 2142" nice build/release/tests/bf2142_tests
+# the tests run in parallel processes, slowest first (the whole suite takes about
+# a minute): every core when run under nice, else at most 8; -j N runs N at a
+# time; a name runs only the tests containing it
 # --remaster (or BF2142_REMASTER_TESTS=1) adds the Project Remaster tests; they
 # need mods/Project_Remaster_v17_Final in the install (BF2142_GAME_DIR)
 
-# Release build for playing (much faster than the ASan debug build above)
-cmake -S . -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release
-ninja -C build/release src/Main/bf2142
+# Debug build with ASan/UBSan: only for investigating a failing test (several
+# times slower); run just the failing tests in it, by name
+cmake -S . -B build/native -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined"
+ninja -C build/native && build/native/tests/bf2142_tests <failing test>
 
 # Optional: Steam Audio for the enhanced mode's occlusion (a 181 MB download)
 cmake -S . -B build/release -DBF2142_STEAM_AUDIO=ON && ninja -C build/release src/Main/bf2142
@@ -213,6 +217,10 @@ $B --game "$G" --menu --view                       # the main menu in a window: 
 $B --game "$G" +level Camp_Gibraltar --play --view # straight into a level as an EU soldier
 $B --game "$G" +level Cerbere_Landing +gameMode gpm_sp +mapSize 16 --bots 15 --simulate 120   # a headless bot round
 ```
+
+For development there is also a small launcher app in [`launcher/`](launcher/README.md). Start it
+with `cargo tauri dev` from the repository root. It builds with ninja, runs the game, and lets you
+tick any of the options below and the enhanced options.
 
 ### How a run behaves
 
@@ -398,6 +406,7 @@ pushing a stick. A gamepad reads as an Xbox 360 pad.
 | `BF2142_CONFIG_DIR` | The folder for profiles, settings, stats and demos, instead of `~/Library/Application Support/bf2142-recomp` (`%APPDATA%\bf2142-recomp`, `~/.config/bf2142-recomp`). Point it at a scratch folder for test runs of the menu. |
 | `BF2142_ACCOUNT`, `BF2142_PASSWORD`, `BF2142_SOLDIER`, `BF2142_CDKEY` | Online credentials, instead of `bf2142-online.cfg`. |
 | `BF2142_FRAME_BENCH=<n>` | With `--screenshot`, print the mean cost of n rendered frames. |
+| `BF2142_FRAME_STATS=<seconds>` | Every `<seconds>` (5 if not a number; off when 0 or empty), print the main thread's time per frame stage (mean, 95th percentile and max, ms) and the frames over 50 ms. Also prints the GPU driver at startup. |
 | `BF2142_BOT_SEED=<n>` | The bots' random seed, to compare rounds. Without it the seed comes from the clock, as in the original, except under `--simulate`, whose rounds repeat. |
 | `BF2142_BOT_STATS=1` | Per-bot statistics at the end of a run. |
 | `BF2142_SOUND_LOG=1` | Print every sound played. |
@@ -491,7 +500,10 @@ The rest only change what you see or hear.
 | `chaseRoll` | off | camera | A flying vehicle's chase and front-chase views bank with its hull; the original keeps them level. | no |
 | `passengerWeapons` | on | gameplay | An air transport's passengers fire their own weapons (the pod only on the exit key). | yes |
 | `softLanding` | on | gameplay | A soldier landing on or walking into a slower object takes the ground's fall damage instead of a road kill. | yes |
-| `hudWidescreen` | off | interface | A mod without Project Remaster's hudfix gets the same 4:3 HUD (x scaled by 12/16) with its side pieces moved out by 120. Ignored when the hudfix's shader is already installed. | no |
+| `hudWidescreen` | off | interface | A mod without Project Remaster's hudfix gets the 4:3 HUD squeezed to the window's aspect ((4/3) ÷ aspect: the hudfix's 12/16 at 16:9, about 0.56 at 21:9), with its side pieces moved out to match (120 at 16:9) and the gunner frames widened to cover the window. It is laid out again when the window is resized. Ignored when the hudfix's shader is already installed, whose fixed 16:9 layout stays. | no |
+| `squadOrderPoints` | on | gameplay | The squads' order points, their HUD bar and the field upgrades it awards work on any server, offline included. The original runs them only on a ranked GameSpy server, so offline it never shows the bar. | yes |
+| `singleplayAllModes` | on | interface | The singleplayer page lists every level's every mode and size (Titan, Assault Lines, conquest and the rest), each row naming its mode, not only its single-player layouts; the chosen map starts in its own mode. For testing: the bots may not play those modes (Titan bots need `botTitan` and `botCommander`). | no |
+| `singleplayBotCount` | on | interface | The singleplayer page gets a MAX PLAYERS slider (1 to 64, default 16) beside the bot skill, kept in the profile. A playlist or instant action started from the page fills each map with that many players, you included, but never more than the map holds: with the slider at 64 a 32-player map gets 31 bots and the next 16-player map 15. The original's page starts every map with 16 players, you included, whatever its size, so at 16 the games are the original's. | no |
 
 `enhanced.enabled` on its own also turns on the enhanced audio (below), lets
 a sound the data names but never creates take its weapon event's defaults,
@@ -549,7 +561,7 @@ feeds the simulation.
 bot round (Cerbere Landing, 15 bots) twice without `--enhanced`, to make sure
 the round repeats, and once with it, with the simulation options above
 (`botRecovery`, `botMovement`, `botTitan`, `botCommander`, `botPilots`, `guidedCameraEase`,
-`cornerSteer`, `passengerWeapons`, `softLanding`) turned off. It compares the state
+`cornerSteer`, `passengerWeapons`, `softLanding`, `squadOrderPoints`) turned off. It compares the state
 fingerprints each run prints and fails if `--enhanced` changed the
 simulation. Anything added to the enhanced mode either leaves the
 fingerprint alone or gets its own option, listed in the script.

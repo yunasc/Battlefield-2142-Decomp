@@ -32,12 +32,19 @@ them against HEAD before working on an item.
 4. **Build and test** with `nice` and a limited `-j`:
 
    ```sh
-   nice -n 10 ninja -C build/native -j6
-   BF2142_GAME_DIR="$PWD/source/Battlefield 2142" build/native/tests/bf2142_tests -j 4 [filter]
+   nice -n 10 ninja -C build/release -j6
+   BF2142_GAME_DIR="$PWD/source/Battlefield 2142" nice build/release/tests/bf2142_tests [filter]
    ```
 
-   `Titan_WalkerSweepsTheSuezBridges` is a known failure that predates this work.
+   Test in the Release build. Use the Debug build (`build/native`, with sanitizers)
+   only to re-run a failing test when you need the sanitizers or a debugger.
+
    The Remaster mod isn't installed here, so its legs of the tests skip.
+
+   Run only the tests your change touches, by filter, not the full suite. Run the
+   full suite only at the very end, and only if your change could reach systems
+   those tests don't cover. The main agent runs the full suite once several items
+   are merged, and sends any failures back to an agent (`CLAUDE.md`).
 5. **Close the item.** Change its status to `done (<commit>)`, `rejected (<reason>)`
    or `blocked (<what's missing>)`, and keep a short note on what retail does.
 6. Run at most 3 agents at once in this repo, and don't let agents start helpers
@@ -50,12 +57,12 @@ anything), `pending-commit` (fixed in the working tree but not yet committed).
 
 | ID | Status | Item |
 |---|---|---|
-| Q-1 | pending-commit | `RemoteWorld` squad reports and radar maps never cleared (0b87ad7). The fix is in the working tree: `src/Net/RemoteWorld.cpp` (`dropExpired`, plus clears in `clear()` and `onLevel`) and the test `NetGame_RemoteWorldSquadReportsEndWithTheLevel` in `tests/NetGameTest.cpp`. The test fails without the fix and passes with it. All `NetGame_` and `NetHost` tests pass; the full suite hasn't been run with it yet. |
+| Q-1 | done (0a0b9ad) | `RemoteWorld` squad reports and radar maps never cleared (0b87ad7). The fix is in the working tree: `src/Net/RemoteWorld.cpp` (`dropExpired`, plus clears in `clear()` and `onLevel`) and the test `NetGame_RemoteWorldSquadReportsEndWithTheLevel` in `tests/NetGameTest.cpp`. The test fails without the fix and passes with it. All `NetGame_` and `NetHost` tests pass; the full suite hasn't been run with it yet. |
 
 ## Crashes and correctness bugs
 
 ### Q-2. Two new Titan tests crash without the Remaster mod (high)
-- **Status:** open
+- **Status:** done (wave 1). Both tests start with `REMASTER_ONLY()` and CHECK the Titan before using it.
 - **Commits:** 7c52206, a563255
 - **Where:** `tests/TitanTest.cpp` ~5160 (`Titan_CorpseLiesOnTheDeck`) and ~5277
   (`Titan_WreckedGunshipOnTheDeckCantBeBoarded`)
@@ -69,7 +76,17 @@ anything), `pending-commit` (fixed in the working tree but not yet committed).
   only the known Walker failure.
 
 ### Q-3. `Player::queueFrame` has no limit within one script call (medium)
-- **Status:** open
+- **Status:** done (wave 2). In SwiffPlayer.dll, `0x100ca870` calls the sprite's
+  slot 0xa8 (`0x100cf5b0`), which appends to the queue at +0x108 every time. Its
+  resize (`0x100048a0`) has no limit. When `0x100cfa40` takes the queue, it goes
+  to the first frame and pops the entries after it that equal it. So retail
+  collapses repeated frames when it reads the queue, and it has no cap.
+  `queueFrame` now drops a frame equal to the last one queued, which gives the
+  same gotos. It also keeps at most 64 entries (`Player::kMaxQueuedFrames`,
+  dropping the oldest). The cap isn't in retail; a comment marks it as a
+  safeguard. Dropping repeats doesn't help with an alternating
+  `gotoAndStop(i%2+1)`, but the cap does. Test:
+  `SwfPlayer_QueuedFramesDropRepeatsAndAreCapped`.
 - **Commit:** 86d196d
 - **Where:** `src/UI/Player/Player.cpp`, `queueFrame` and `applyQueuedFrames`
 - **Problem:** every gotoAndStop, gotoAndPlay, GotoFrame or GoToLabel adds to
@@ -82,7 +99,16 @@ anything), `pending-commit` (fixed in the working tree but not yet committed).
   says it drops repeats.
 
 ### Q-4. The first-person rig blends from the wrong tick on multi-tick frames (low to medium)
-- **Status:** verify (see also A-12)
+- **Status:** done (wave 2). `FirstPersonRig` snapshots `m_previous` on the
+  first `update()` after a `blend()` (the pose where the last frame left the
+  skeleton), so a frame's alpha, which spans all its ticks (`0x0043f170`),
+  blends from there to the last tick's pose. `blend()` clamps alpha to
+  −0.1..1.1 as the objects' does. `setWeapon()` also resets `m_previous` and
+  the drawn matrices to the setup pose, so a frame drawn before the next tick
+  shows the new weapon's start pose. Tests:
+  `FirstPerson_MultiTickFrameBlendsFromTheLastDraw` (three-tick frames, the
+  extrapolated ends and the clamp) and `FirstPerson_WeaponChangeDrawsTheNewPose`.
+  Both fail without the fix.
 - **Commit:** 50e85c9
 - **Where:** `src/Animation/FirstPerson.cpp:179` (`m_previous = m_pose` every tick)
   and `FirstPerson.h:229` (`blend`)
@@ -96,7 +122,7 @@ anything), `pending-commit` (fixed in the working tree but not yet committed).
   use the shared alpha range; and snap on `setWeapon`. Add a multi-tick frame test.
 
 ### Q-5. `BF2142_FRAME_STATS` problems (low)
-- **Status:** open
+- **Status:** done (wave 1). `FrameStats::intervalFrom`: unset, empty, 0 or negative is off; the `gpu: driver` line only with the stats on; `dropFrame` on a failed acquire; README row. Tests `FrameStats_IntervalFromTheVariable`, `FrameStats_DroppedFrameAddsNothing`.
 - **Commits:** 8e3e8cf, 8a22e02
 - **Problems:**
   - `BF2142_FRAME_STATS=0` turns the stats on, at 5 s (`src/Render/FrameStats.h:31`:
@@ -110,10 +136,48 @@ anything), `pending-commit` (fixed in the working tree but not yet committed).
 - **Fix:** treat 0 or empty as off; gate the printf behind the variable; end (or
   drop) the frame's stats on the failed-acquire path; document the variable.
 
+### Q-13. `Titan_WalkerSweepsTheSuezBridges` fails, and is disabled (medium)
+- **Status:** done (wave 3, 09577ac). The test was wrong, not the walker physics. No
+  lane stopped at the spans' deck or the joint. The vanilla mech stopped
+  against objects that retail's `StaticObjects.con` places on and beside the
+  road, and that collide in retail too (`physicsType Mesh`,
+  `hasCollisionPhysics 1`):
+  - The open-loop throttle drive took a few degrees of heading from a bump at
+    the start: `bc_yard_a` on the west road, `eu_ag_wreck` (−76.3, −24.3) on the
+    east road. Over the 300 m run that put the walker metres off its lane, into
+    the towers' legs (x −303 and −187, z ≈ −20 / −44) or a railing post
+    (x −138.85). The scrape's friction then turned it into the obstacle.
+  - `as_apc_wreck` (−316.95/52.127/−38.817, yaw −138.4) sits on the west span.
+    Its faces reach y 53.0–53.7, above the bottom of the hull's vehicle-LOD box
+    (1.9 m under the origin, 54.1 on the deck). That makes it a wall for the
+    hull's Basic response. For the legs' sphere it's a wall above stepHeight
+    (`us_heavy_mech_MechLegs`: length 2.8, stepHeight 1.4; `0x006cec60`).
+    Lanes 3–6 m south of the axis meet it. Some stop there; others climb its
+    sloped top or scrape past.
+
+  The sweep now holds its lane as a driver would (PIYaw back to the lane's
+  line, at most 20° off). Each lane must cross, or stop within 7 m of that
+  wreck (with the default lanes, fwd +6 walk and back −3 sprint stop there).
+  A lane ends after 5 s stopped. 8 s a run, in the Release build.
+- **Where:** `tests/TitanTest.cpp` (`Titan_WalkerSweepsTheSuezBridges`, its first
+  line `DISABLED(...)`)
+- **Problem:** the vanilla `us_heavy_mech` doesn't cross the big road's two
+  spans (`span(-245,-32)`) in several lanes, both ways: it stops on the deck
+  ("stuck at" about y 54.1) and `crossed` fails. It failed before the
+  2026-11-25 vehicle and Titan fixes too. A run takes 2.5 to 8.5 minutes, the
+  longest in the suite, so it's switched off rather than failing every run.
+- **Fix:** find what stops the walker at the spans (the joint at x -245 was
+  fixed once: retail's walker response, `0x00854170`), then delete the
+  `DISABLED` line. `WALKER_SWEEP=1` logs every lane.
+- **Done when:** the test passes with the `DISABLED` line removed.
+
 ## Performance
 
 ### Q-6. A template lookup for every child, every frame, in `collectParts` (medium)
-- **Status:** open
+- **Status:** done (wave 1). `LevelRenderer::blendsBetweenTicks` caches the
+  answer per `const ObjectTemplate*` (`m_blendsBetweenTicks`, like
+  `m_animatedUVLooks`); the uncached test is `templateBlendsBetweenTicks`, which
+  `markBlendedParts` still uses. No behaviour change.
 - **Commits:** 3443d51, 81bc213
 - **Where:** `src/Render/LevelRenderer.cpp` ~1121-1131
 - **Problem:** `blendsBetweenTicks(*childTemplate)` runs for every child of every
@@ -124,7 +188,7 @@ anything), `pending-commit` (fixed in the working tree but not yet committed).
   does, or store a flag per node next to `nodesTicked`.
 
 ### Q-7. Nametag loops (low)
-- **Status:** open
+- **Status:** done (wave 1). The decoy loop sits in `if (m_icons)`; the vehicle reveal reads a set of reported vehicles built once per frame. Same output.
 - **Where:** `src/Main/Nametags.cpp`
 - **Problems:**
   - The decoy loop, `for (const auto& p : m_icons ? players : std::vector<...>{})`,
@@ -134,7 +198,7 @@ anything), `pending-commit` (fixed in the working tree but not yet committed).
     vehicles.
 
 ### Q-8. One `titanParts` call still ignores the Titan's id (low)
-- **Status:** open (left over from round 1)
+- **Status:** done (wave 1). The cut-off check passes `titan->object` too.
 - **Where:** `src/Game/BotsTitan.cpp:409`, the cut-off check from 98163d0
 - **Problem:** this one call still passes `titanParts(titan->team)` without
   `titan->object`; every other call was updated in 709a7bf. It's for consistency
@@ -143,7 +207,15 @@ anything), `pending-commit` (fixed in the working tree but not yet committed).
 ## Missing tests
 
 ### Q-9. The tick-blend history and the soldier-eye camera aren't tested (low)
-- **Status:** open
+- **Status:** done (wave 3). `ObjectBlend`, `pruneObjectBlends` and
+  `sampleObjectBlend` moved to `src/Render/TickBlend.h` (syncObjects calls them);
+  `soldierEyeCarrier` and `composeSoldierEye` to `src/Main/MissileViewSmoothing.h`
+  (Viewer.cpp calls them, same arithmetic in the same order). Tests in
+  `tests/TickTimerTest.cpp`: `TickBlend_ObjectHistoryByIdAsSyncObjects` (a new id
+  unblended, a frame without a tick, a pruned id erased and starting afresh),
+  `TickBlend_ObjectHeightJumpSnaps` (3.9 / 4.0 blended, ±4.1 snapped),
+  `TickBlend_SoldierEyeComposition` (the carrier, the 0.2 eye step, the turn, the
+  85° pitch clamp).
 - **Where:** `LevelRenderer::syncObjects`, and `src/Main/Viewer.cpp` ~1005-1040
   (carrier yaw, `lookTurn`, eye step)
 - **Missing cases:** a new id starts unblended, a removed id is erased, a jump of
@@ -153,7 +225,17 @@ anything), `pending-commit` (fixed in the working tree but not yet committed).
   them there.
 
 ### Q-10. A shader test only searches the source text (low)
-- **Status:** open
+- **Status:** done (wave 1). The fog and particle pixel math now live in
+  `src/Render/Shaders/fog_share.glsl` and `particle_color.glsl`, written in the
+  subset of GLSL that C++ also compiles. The shaders include them, and so does
+  `src/Render/ShaderMath.h`, which mirrors the few GLSL types and built-ins they
+  use. The `ShaderMath_` tests in `tests/ShaderUniformsTest.cpp` evaluate that
+  code against numbers worked out from RaCommon.fx `calcFog`, Particles.fx and
+  D3D9's fixed-function fog: the fog's share, the decision of which sprites fog
+  (A-8), the additive mask before the clamp, and ps_1_4's saturated output
+  before the fog. That last one was a fix: normal particles brighter than 1
+  were fogged before the clamp (red 1.2 at a 0.625 fog share gave 0.575;
+  retail gives 0.5).
 - **Commit:** 01bdaeb
 - **Where:** `tests/ShaderUniformsTest.cpp:178`, which greps for
   `clamp(outColor.rgb * outColor.a`
@@ -189,7 +271,7 @@ anything), `pending-commit` (fixed in the working tree but not yet committed).
   - drop or explain the redundant flags.
 
 ### Q-12. Small test-tool and key-script nits (low)
-- **Status:** open
+- **Status:** done (wave 1). `rclick` is its own `if`; `--remote-actions` holds the lie key while the asked pose and our ghost's pose (the server's, mask 0x20) differ, so a refused press stays one press.
 - **Problems:**
   - `src/Main/Viewer.cpp`, `runKeyScript`: the `else if (step.op == "rclick")`
     hangs off the new `release` branch. Make it a separate `if`.
@@ -198,13 +280,147 @@ anything), `pending-commit` (fixed in the working tree but not yet committed).
     next scripted change sends a second lie press that inverts the stance. This
     only affects the test tool.
 
+## Enhancements
+
+### Q-14. The widescreen HUD is fixed to 16:9, wrong on ultrawide (UWQHD) screens (medium)
+- **Status:** done (wave 3). With `enhanced.hudWidescreen` (and no hudfix), `hud::widescreenLayout`
+  (`src/Hud/Widescreen.h`) works out the layout from the window's pixel size each frame
+  (`ViewerOptions::windowSize`), so a resize updates it. The squeeze is (4/3) ÷ aspect. The sides
+  move 360 (1/squeeze − 1), which is 120 at 16:9. The frames keep their authored on-screen 0..1024,
+  plus one unit at each edge. At 16:9 this gives Remaster's 12/16, ±120 and -134/1367 exactly. 21:9
+  (3440×1440) gives 0.558, 285 and -317/1836, and 32:9 gives 0.375, 600 and -667/2732. A window 4:3
+  or narrower keeps the authored HUD. Tests: `Hud_WidescreenLayoutForTheWindowsAspect`,
+  `Hud_WidescreenLayoutFollowsAResize`. Off-screen screenshots at 3440×1440 and 5120×1440 show a
+  round minimap, the sides at the edges and the gunner frame covering the full width. When the
+  hudfix's shader is installed, its fixed 16:9 layout stays, even with the flag on: its
+  HudRotation.con and the re-cut commander screen aren't available here to extend. Flash menus,
+  from reading the code: `ui.vert` stretches the stage to the window (`size.z` 0 for menus), so at
+  21:9 they stretch about 1.79× wide. That's the same as before, and the pointer mapping matches.
+- **Where:** `src/Main/main.cpp` ~3886–3925 (`hudXScale`, the `enhanced.hudWidescreen` block)
+- **What works:** at 3440×1440 (21:9), with `+widescreen 1` (`src/Main/DisplayModes.h`),
+  the mode is offered. The 3D view widens correctly: `aspectFov`, RendDX9's
+  `0x10066ac0`, keeps the vertical FOV from 4:3 up to very wide screens.
+- **Problems:**
+  - Remaster's HUD fix (applied natively) and `enhanced.hudWidescreen` both squeeze
+    the 4:3 HUD by a fixed 12/16, which is only right at 16:9. The right squeeze is
+    (4/3) ÷ aspect, about 0.56 at 21:9. At 21:9 the HUD stays about 1.34× too wide,
+    so round gauges and the minimap come out oval.
+  - The side pieces move a fixed 120 units (`shiftNode` ±120), so on wider screens
+    they don't reach the edges.
+  - The full-screen gunner frames and filters are spanned to -134..1367
+    (`spanNode`), which covers 16:9 only. On 21:9 they likely leave bare strips at
+    the sides. This hasn't been looked at on screen.
+  - The Flash menus haven't been checked at 21:9.
+- **Fix:** under `enhanced.hudWidescreen`, derive the squeeze, the side offset and
+  the frame span from the window's real aspect ratio, and update them when the
+  window is resized. With Remaster's patch installed, the fixed 12/16 is retail
+  behaviour with the mod, so only replace it behind the enhanced flag. Check
+  32:9 as well.
+- **Done when:** at 3440×1440 and 5120×1440 the HUD keeps its 4:3 proportions,
+  the side pieces sit at the screen edges, and the gunner frames cover the
+  whole screen. Add a test of the computed values for 4:3, 16:9, 21:9 and 32:9.
+
+### Q-15. A native menu in C++ to replace the Flash menus (large)
+- **Status:** open
+- **Goal:** a menu written in C++, drawn by the game itself, that can replace
+  retail's Flash menus (`menu/*.dfm` run by `src/UI`'s SWF player and AVM1
+  interpreter) page by page. Retail's movies stay the default; the native menu is
+  an `enhanced.*` option.
+- **Why native and not the Tauri launcher:** the menu doesn't stop at the start of
+  a game. Esc shows it over the game (`updateMenuGameState`, `MenuGameState.h`),
+  a playlist runs map after map with the end-of-round screen between, and
+  options change mid-game. A separate launcher process can't draw over the game,
+  would need a relaunch or an IPC channel at every hand-off, and would duplicate
+  profiles, stats, unlocks, the LAN search and the playlist logic that already
+  live in C++. The launcher stays a developer tool (see its map picker).
+
+**How to build it**
+
+1. **Draw through the existing menu hook, not a new renderer path.**
+   `LevelRenderer`'s `sources.menu` is a `std::function<ui::MenuFrame(float)>`
+   (`src/Render/LevelRenderer.h`, set in `src/Main/main.cpp` near
+   `updateMenuGameState`). `ui::MenuFrame` (`src/UI/MenuDraw.h`) is a list of
+   textured, colour-transformed triangle batches in a 1024×768 stage, with
+   stencil masks, drawn over everything. A native menu that returns a
+   `MenuFrame` needs no renderer or shader changes, works over the game and the
+   loading screen, and gets fullscreen, widescreen and screenshots for free.
+   Lay out in stage units and map to the window as the Flash menus do, and reuse
+   `hud::widescreenLayout` (`src/Hud/Widescreen.h`) so wide screens get extra
+   width instead of stretching.
+2. **A small retained widget layer of our own** (`src/UI/Native/`), in this
+   order:
+   - Primitives: a quad batcher writing `MenuVertex`; 9-slice panels and buttons;
+     text through the HUD bitmap fonts (`src/Hud/HudFont.h`, the `.dif`/`.dds`
+     fonts the HUD already draws) or the menu SWF's embedded fonts (the
+     glyph-atlas path in `src/UI/Characters`). Prefer the game's own textures
+     and fonts, from `menu_client.zip` and the HUD archives, so it looks like
+     BF2142.
+   - Widgets: label, button, list (rows, selection, scrolling), slider,
+     dropdown, checkbox, text field (typing, caret, Caps Lock via
+     `MenuBindings::capsLock`), tabs, modal popup. Each widget is a plain struct
+     with a `layout`, `draw(Batcher&)` and `input(Event)`.
+   - Focus and navigation: mouse, keyboard (Tab, arrows, Enter, Esc) and
+     gamepad (`src/Input/GameControllers`) from day one; Flash only did mouse.
+   - Skip Dear ImGui: it would add an SDL GPU backend beside the renderer, and it
+     looks like a developer tool unless it's restyled at length. Use it only, if
+     at all, for a debug overlay.
+3. **Input:** the menu takes the same calls `ui::Player` gets now
+   (`mouseMove`, `mouseDown`/`mouseUp`, `mouseWheel`, `keyDown(code, char)`,
+   `keyUp`) from `Viewer.cpp`'s event loop, so wire it in where the Player is fed
+   and switch on the flag.
+4. **Back end: call `MenuBindings` directly, not the natives.**
+   `src/Main/MenuBindings*` already does what the pages ask for: the level scan
+   and map lists (`availableMaps`, `allGameModes`), `gameSetup()` and the start
+   of a game, the playlist, `SettingsObjects` (the profile `.con` files and
+   `Enhanced.con`), local profiles and soldiers, stats and unlocks (`src/Stats`),
+   the LAN server search and join, the controls page's rebinding, the
+   end-of-round data (`EndOfRoundBindings`). Expose them as a typed C++ API
+   (for example `MenuModel`) that both the AVM1 natives and the native pages
+   call, so the two menus can't drift apart. Pull any page logic that lives in
+   the movies' ActionScript (for example the singleplayer page's `startServer`,
+   which sets 16 players before every start; see `MenuSingleplayBots.cpp`) into
+   that API, with a citation.
+5. **Page order** (each one usable on its own, with Flash still serving the
+   rest; switching between the two at a page boundary):
+   1. Singleplayer playlist: map list with modes and sizes, chosen list, rounds,
+      bot skill, players (the `singleplayBotCount` rule), instant action.
+   2. The Esc menu over a running game: resume, options, leave or quit.
+   3. Options: video (`DisplayModes.h`, widescreen), audio, controls
+      (rebinding, the gamepad axes).
+   4. Profiles, soldiers and the unlock and stats pages.
+   5. LAN browser, join and create server.
+   6. End of round and the loading screen.
+   Keep the online pages (FESL login, server browser on the master server) on
+   Flash until last.
+6. **Flag and parity:** `enhanced.nativeMenu`, off by default, with a README
+   enhanced-table row. Flash stays the retail path and the reference: check
+   each native page against the movie it replaces (same settings written, same
+   game started), and keep the `MenuBindings_` tests passing for both.
+7. **Tests:**
+   - widgets: layout, hit-testing and focus as pure functions over
+     `MenuFrame`/events;
+   - pages: a scripted run (like `--menu-script`: clicks, keys, `print:`) that
+     drives a native page and checks the resulting `GameSetup` and the profile
+     files;
+   - a `--screenshot` of each page at 4:3, 16:9 and 21:9.
+- **Done when:** with `enhanced.nativeMenu` on, a player can go from start-up to
+  a singleplayer playlist, play it map after map, use the Esc menu and change
+  options, with no Flash movie loaded, by mouse, keyboard or gamepad; with it off
+  nothing changes. Later stages are their own items once the first lands.
+
 ## Retail parity: default behaviour that differs from retail
 
 Each of these needs the retail claim confirmed first (step 1), then matching retail
 or gating behind a flag.
 
 ### A-1. Bot squad split puts the new bot in the wrong squad (round 2, high)
-- **Status:** verify
+- **Status:** done (wave 1). Confirmed in the disassembly: after the move
+  (0x100890fb..0x1008915c), `mov esi, [ecx+4*eax]` at 0x1008914c makes `esi`
+  the next squad, and nothing writes `esi` again before `mov ecx, esi` at
+  0x100891e1/0x100891fb, so the append (0x100891e3) and the join (0x100891ff)
+  both use the next squad. `joinAiSquad` now joins `chosen + 1` after a move.
+  The tests pin {0,1,5}, {2,3}, {4,6,7}, and in the human cases the new bot
+  follows the member who moved.
 - **Commits:** 9d3a0a0, 068490b
 - **Where:** `src/Game/GameWorld.cpp` `joinAiSquad` (~5972)
 - **Retail (AIDLL 0x10089000):** when the chosen squad has 3 or more members and
@@ -219,7 +435,14 @@ or gating behind a flag.
 - **Fix:** after a move, join the new bot to `chosen + 1`, and fix both tests.
 
 ### A-2. Turret EMP only scales seat 0 (round 2, high)
-- **Status:** verify
+- **Status:** done (wave 2). Confirmed: 0x00565180 walks the bundle and its
+  parents (+0x34) to the first with an armour (+0x48), stops there, and scales
+  inputs 0..5 by 1 - level / numSteps (armour slots 0x14c, template interface
+  0xc4aa slots 0x1bc / 0x1d4, as the PCO filter 0x005ca2e0). No shipped seat
+  PCO has an Armor component (the Titans' armoured gun hubs take no EMP), so
+  every gunner takes the vehicle's EMP. `SeatLayout::yawArmour` / `pitchArmour`
+  hold each look bundle's nearest armoured ancestor; the test now pins eu_tank's
+  cupola at x 1/2 and x 0 (12.0, 6.0, 0.0 degrees).
 - **Commit:** 8beeeb4
 - **Where:** `src/Game/GameWorld.cpp:14312` `stepGunner`
 - **Retail (0x00565180):** walks up the bundle's parents (+0x34) to the first one
@@ -232,7 +455,20 @@ or gating behind a flag.
   and fix the test. 6830e6f's `pitchInputLost` path must keep working.
 
 ### A-3. Titan wreck drain: ×3 dropped for Titans only (round 2, medium)
-- **Status:** verify (blocked on AIDLL slot 0x20)
+- **Status:** done (wave 3). Slot 0x20 resolved. AIDLL's interface (vtable
+  `0x10107210`, constructor `0x10001030`: `+4` 0, `+5` 0, `+6` 1, `+7` 1) answers
+  slot 0x18 with `+4` (`0x1005cf30`), set only by its init (slot 4, `0x10001740`,
+  at `0x100017ba`), and slot 0x20 with `+6` (`0x1008a9b0`), which that init sets
+  from its first argument. The init's caller is the server's level load
+  (`0x004aefe0`, the call at `0x004af290`, through the copy of `DAT_00b47ce4` in a
+  local, which is why the earlier scan missed it): first argument
+  `!(GSGameMode is "sp1", "gpm_sp" or "gpm_coop")`, second `(it is "sp1" or
+  "gpm_sp")`. So the ×3 is the single-player and co-op modes' alone, for vehicles
+  and Titans alike; in gpm_ti (and conquest) a wreck drains at 1× with bots,
+  which is what the retail observation behind 5bbdb2d saw.
+  `GameWorld::wreckDrainsFast` (AI running and one of those modes) now drives
+  both `destroyVehicle` and `stepTitanWreck`. `GameWorld_WreckDrainsFasterWithBots`
+  checks six mode/AI legs; `Titan_SilosWearTheShieldThenTheHull` checks gpm_ti is 1×.
 - **Commit:** 5bbdb2d
 - **Where:** `src/Game/Titans.cpp:1978` `stepTitanWreck`; compare
   `src/Game/GameWorld.cpp:1607` for vehicles
@@ -246,7 +482,18 @@ or gating behind a flag.
   ×3 everywhere and cite the observation.
 
 ### A-4. Parachute starts at rest without a retail citation (round 2, medium)
-- **Status:** verify
+- **Status:** rejected (wave 3): retail starts it at rest too. 0x005f31d0 works
+  out the velocity (speed plus the root's +0x50 slot 100, capped), but hands it to
+  0x005f2bb0, which applies it (`param_2[0x14]` slot 0x5c) only in the branch for a
+  round answering 0x94c1 (the QueryInterface at `0x005f2c15`). The Parachute
+  (class 0xc5a8, object vtable `0x0096e818`, slot 3 = the PlayerControlObject's
+  QueryInterface `0x005cc940`: 1, 0xc378, 0x3709a4ff, 0xc4c5, 0xc49e) has no
+  0x94c1, so it takes the 0xc4c5 branch (`0x005f2ec4`..`0x005f2fd0`: the owner's
+  collision grace `0x006b8de0` and the enter event), which overwrites the velocity
+  argument at `0x005f2f29` without reading it. The round is made by the fire comp's
+  slot 0x3c (`0x005f18f0`: the server's create, `DAT_00a1c170` slot 0x120, place
+  only), and entering (`0x005cfaf0`) only sets its transform. The port's at-rest
+  start (8ce120b) stays; its comment and engine.md now cite this.
 - **Commit:** 8ce120b
 - **Where:** `src/Game/Parachutes.cpp:356`
 - **Retail:** the base FireComp launch (0x005f31d0) adds the root node's velocity
@@ -257,7 +504,15 @@ or gating behind a flag.
   observation.
 
 ### A-5. Friendly fire uses a hand-picked type list (round 2, low)
-- **Status:** verify
+- **Status:** done (wave 2). Confirmed: 0x005b7290 takes the victim's root
+  (0x006f1d70) and walks up to the first object answering interface 0xc4c5,
+  whose QueryInterface answers it in PlayerControlObject (0x005cc940, and
+  Parachute, built on the PCO constructor), Soldier (0x00585af0),
+  LadderContainer (0x0059d2d0) and FreeCamera (0x00616600). None found: no
+  scaling. Soldier percentages for a root of class 0x9493 / 0x9c46. The damage
+  now scales only for those classes (not the `steerClosest` lambda, which keys
+  on occupancy); `GameWorld_FriendlyFireSparesNoHub` pins GenericProjectile,
+  SupplyObject, SimpleObject and Bundle at full damage and a PCO at 0%.
 - **Commit:** fa99915
 - **Where:** `src/Game/GameWorld.cpp:1147` damage
 - **Retail (0x005b7290):** scales friendly fire only when it finds an interface
@@ -269,7 +524,18 @@ or gating behind a flag.
   `controlTeam` lambda in `steerClosest` (5b3110e).
 
 ### A-6. Squad order points ignore zero and negative values (round 2, low)
-- **Status:** verify
+- **Status:** done (wave 1). Confirmed: 0x004c4c90 (squad vtable 0x929cd0
+  +0x3c) does `fld [ebp+8]; fadd [esi+0x160]; fstp [esi+0x160]` with no
+  check on the sign, then `fcomp [esi+0x168]` / `test ah,1` (0x004c4d64)
+  skips the award only when points < max. Otherwise it fires the event and
+  calls +0x40 = 0x004c4dd0, which sets the points to 0.0. A max of 0 is
+  not special. The squad constructor 0x004c87a0 sets max to 100.0, so the
+  port's record now starts at 100, not 0. Only NaN is still refused. The
+  test is `ScriptHost_SquadOrderPointsAsRetail`. Not changed (out of
+  scope): the whole routine is gated on byte +0x184, which is set only on
+  a GameSpyRanked server in a standard game mode (0x00430a00), and the
+  port doesn't model that gate. The set-max routine 0x004c4ea0 stores
+  `(double)(int)` with no clamp, but the port still clamps the max at 0.
 - **Commit:** b3344c1
 - **Where:** `src/Game/GameWorld.cpp` `addSquadOrderPoints`
 - **Retail (0x004c4c90):** always adds the points, then fires the event and resets
@@ -277,7 +543,19 @@ or gating behind a flag.
 - **Branch:** ignores points ≤ 0 and does nothing while max is 0.
 
 ### A-7. `setCollisionMesh` fallback is narrower than retail (round 2, low)
-- **Status:** verify
+- **Status:** done (wave 2). Confirmed: the setCollisionMesh executor
+  (0x0051c57b) and the collisionMesh one (0x00530de1) both pass the name to
+  the active template's slot 0x8c, whatever its class. Shipped consequence:
+  the control points' `flagpole` (a Bundle with children) and depth-0 Bundles
+  and SimpleObjects with children placed on the install's community maps
+  (house_medium_05jb, chimney_02jbv3, bp1_floodlight_big_cb ...) had no
+  collision. The static path
+  now reads either (`collisionMeshName`, the later .tweak one first, as
+  Titans.cpp). Widening made the held weapon objects (GenericFireArm roots,
+  almost all named by setCollisionMesh) solid at the soldier's feet and broke
+  the parachute tests, so `addStaticObject` skips GenericFireArm roots: they
+  stand in for a weapon in the soldier's tree, and no shipped level places
+  one. `GameWorld_SetCollisionMeshServesEveryTemplate` pins the solid pole.
 - **Commit:** 090cca2
 - **Where:** `src/Game/GameWorld.cpp` `addStaticCollision`
 - **Retail:** the setter at 0x0051c57b serves every template.
@@ -285,7 +563,28 @@ or gating behind a flag.
   as a shortcut. Widen it when it matters.
 
 ### A-8. Normal-blend particle sprites aren't fogged (round 2, high)
-- **Status:** verify
+- **Status:** done (wave 1). Confirmed in `RendDX9_ori.dll`'s disassembly:
+  - 0x1012fe20..0x1012fe38 loads `movzwl 0x90(%ecx)`, `setne %cl` and calls
+    0x1012f750.
+  - With CL clear and the shader quality (+0x8cb0) not 0, 0x1012f750 sets
+    render states 0x13/0x14 to 5/6 and 0x1c (FOGENABLE) to 1. Otherwise it sets
+    2/2 and fog 0. It sets them through the state manager `DAT_101f8e6c`, whose
+    slot 0x1c is SetRenderState.
+  - The ParticleLow/Medium/High passes don't set FogEnable.
+  - Additive templates (blend mode 1 or 2, 0x10138920) draw through
+    0x10130bd0 and 0x10130540 instead: ONE/ONE, fog 0, and AdditiveLow/High,
+    which set `FogEnable = FALSE`.
+
+  Fix: sprite groups get `fogged = spriteGroupFogged(additive, quality)`
+  (`src/Render/ParticleFog.h`). Normal-blend sprites no longer merge into a
+  placed (repeat) group. The comments are fixed.
+
+  Sub-question, vertex `oFog` or table fog: `oFog`. RendDX9 never sets
+  FOGTABLEMODE (0x23) or FOGVERTEXMODE (0x8c): no `push $0x23` in the binary,
+  and no FogTableMode in the shaders. With a vertex shader and no table mode,
+  D3D9 uses `oFog`, which is vsParticle's `calcFog(HPos.w)`. A screen-aligned
+  sprite's corners share their w, so particle.frag's per-pixel `fogAmount`
+  equals the per-vertex value.
 - **Commits:** 55214dc, then 01bdaeb and c5dd144
 - **Where:** `src/Render/LevelRenderer.cpp:3015` (sprite groups pushed with
   `fogged=false`); the claim is in `LevelRenderer.h:1011` and `particle.frag:5`
@@ -302,7 +601,25 @@ or gating behind a flag.
   comes from the vertex shader's `oFog` or from table fog.
 
 ### A-9. Particle level-of-detail distance uses the wrong point (round 2, medium)
-- **Status:** verify
+- **Status:** done (wave 2). Checked against RendDX9_ori.dll's disassembly:
+  - `0x10135be0` returns true when min ≤ camera ≤ max on all three axes (both
+    faces count as inside), and `0x101393e0` then returns 1.
+  - Otherwise the distance is measured from the box centre (+0x114). The size
+    term is the half-diagonal (+0x120) × k[i] / distance, where i = 1 only when
+    the box's y extent is strictly greater than both its x and z extents.
+  - The caller `0x10098bf0` sets k[1] = 1.05 / (fov·tan(fov/2)) and k[0] =
+    k[1] × height/width. Here fov is RenderView +0x24 (slot 0x24) and
+    height/width is RenderView +0x34 (slot 0x48); the view comes from renderer
+    slot 0x5c, which returns +0xf8.
+  - The box is the particles' box grown by particleMaxSize (`0x101407c0`
+    tail), the same box `Emitter::box`/`bounds` builds.
+  - The emission raises the result to minEmitScale (`0x101403b0`).
+
+  `EffectManager::setCamera` now takes the fov and the aspect;
+  `LevelRenderer` passes the target's height / width. Test:
+  `Effects_DistanceLodAsRendDX9` pins a MassiveSmoke-like 4×104×4 column at
+  0.333539, the same box lying along x at 0.277932 (aspect 0.75) and 0.236227
+  (aspect 0.5625), and the inside / on-face / just-outside cases.
 - **Commit:** 62ac2aa
 - **Where:** `src/Effects/Effects.cpp:781`
 - **Retail (0x101393e0):**
@@ -317,7 +634,22 @@ or gating behind a flag.
   as MassiveSmoke are where this shows.
 
 ### A-10. First-person skeleton blended between ticks with no flag (round 2, medium)
-- **Status:** verify (see Q-4)
+- **Status:** done (wave 2), no flag. Retail steps the soldier's animation
+  systems once a frame with the frame's time, not in the tick: the frame
+  (`0x0040bd90`) calls ObjectManager slot `0x2c` (`0x007002d0`) with its
+  seconds, which runs slot `0xa4` of the objects with update flag `0x2000`
+  (`0x006f68f0` → manager slot `0xf8`). The Soldier's constructor
+  (`0x0058df00`) sets `0x3800`, and its slot `0xa4` is `0x00586710` →
+  `0x005ef250(frame dt)` → the active system's update (`0x008baed0`) and the
+  weapon's. `0x00586200` (1/30 s) is a side path for the scene rays, so the
+  engine.md claim was wrong. The slot `0xa0` caller (`0x00585bf0` →
+  `0x005f06b0`, where the pose is evaluated) is still unfound: no direct
+  `call`/`jmp [reg+0xa0]` site in the exe's disassembly is a Soldier's. A
+  per-tick pose is therefore less like retail than the blend, so the blend
+  stays the default and isn't gated. Moving the port's first-person step
+  into the frame (and its third-person bones, which stay per tick) is a
+  separate change. The comments in `FirstPerson.h` and `docs/engine.md` now
+  say this.
 - **Commit:** 50e85c9
 - **Where:** `src/Animation/FirstPerson.h:229`, called at `src/Main/main.cpp`
   ~10643 and ~11036
@@ -328,6 +660,62 @@ or gating behind a flag.
   `0x005f06b0(this, dt, 1)`. No direct caller has been found yet.
 - **Fix:** until a per-frame retail caller is traced, gate the blend behind a new
   flag (for example `enhanced.firstPersonBlend`). Make the code and docs agree.
+
+### A-11. Squad order points ignore retail's ranked-server gate (wave 1, low)
+- **Status:** done (wave 3). Confirmed: 0x004c4c90 and 0x004c4ea0 both start with
+  `if (+0x184)`; the server's squad constructor 0x004c87a0 sets `+0x184` from
+  0x00430a00 (gpm_cq/ti/sl/nv/ca, AIDLL slot 0x20 true when loaded, an internet
+  server with GameSpyRanked, then sv.ranked `+0x26d`). The set-max stores
+  `(double)(int)` and sends event 0x56 flag 0 to the squad. The HUD's 0x56
+  handler (0x007a2100) keeps points (flag 1) at `+0x310`; a maximum ≤ -1 clears
+  `+0x302`, else sets it and keeps the max at `+0x318` (100 by default); the
+  frame update (0x007a0f80) shows a member's bar (`+0x2fd`) from `+0x302` alone
+  and fills it 1 once points ≥ max, else points / max. Port: `GameWorld::
+  squadOrderPointsOn` gates the add and set-max (`setSquadOrderGate` for the
+  ranked answer, never true here), the set-max clamp is gone (also in
+  ScriptBridge and the 0x56 parser, which refused negatives), `PlayerInfo::
+  squadOrderBar` / `RemoteWorld::squadOrderBar` follow `+0x302`, the host sends
+  -1 until a set-max has run, and the HUD uses retail's show and fill (the
+  field-upgrade credit no longer shows the order bar). Offline the bar is kept
+  behind `enhanced.squadOrderPoints` (on, gameplay, in the parity check's off
+  list and README's table). Tests: `ScriptHost_SquadOrderPointsAsRetail` (gate
+  off, the flag, -5 kept and hiding the bar), `ScriptHost_FieldUpgradeFromSquadScoring`,
+  `HudLists_FieldUpgradeSelectionAndExpiry` (no bar before a set-max), `NetHost_FieldUpgradeCreditSpendAndEquip`.
+- **Where:** `src/Game/GameWorld.cpp` `addSquadOrderPoints` and `setSquadOrderMax`;
+  `ScriptBridge`; the HUD's squad-order bar
+- **Retail:** the add (0x004c4c90) and set-max (0x004c4ea0) run only when squad
+  byte +0x184 is set, which happens only on a GameSpyRanked server in a standard
+  game mode (0x00430a00). Offline retail never shows the bar (`docs/coverage-5.md`).
+  The set-max also stores `(double)(int)` with no clamp, and the HUD shows the bar
+  only after a max message (event 0x56, value > -1).
+- **Port:** no ranked gate; the max is clamped at 0; the HUD shows the bar when
+  max > 0. Since wave 1 the default max is retail's 100, so points added before any
+  set-max would show the bar (the shipped `scoringCommon.py` always sets it first).
+- **Fix:** model the gate (off for offline and unranked games), drop the clamp, and
+  show the bar on retail's condition. If the bar is wanted offline, put it behind an
+  `enhanced.*` flag.
+
+### A-12. Additive trails and placed particles aren't fogged (wave 1, medium)
+- **Status:** done (wave 3). The claim is confirmed, and retail goes further. RendDX9's trail
+  renderer (0x10133c00: technique 0x10133d90, batches 0x10133000) and its NSA renderer
+  (0x1012e920: 0x1012ebf0, 0x1012d720) pick the technique only by particleSystemShaderQuality,
+  plus particleShaderType 1 for heat shimmer (system +0x174 from the template's getter). Between
+  BeginPass and EndPass they set only textures and constants, no render states. Trail.fx and
+  NonScreenAlignedParticles.fx have no additive technique: Low, Medium and High are SRCALPHA /
+  INVSRCALPHA with FogEnable TRUE, and their pixel shaders don't mask by alpha. A template's
+  particleType Additive never reaches these renderers. The only shipped one is Codename_Excalibur's
+  `em_excalibur_trail_TrailGlow`. So placed groups now always draw normal-blend, lit and fogged
+  (`ParticleFog.h` `placedGroupDraw`), which avoids the problem of ONE/ONE fog brightening.
+  Test: `ShaderMath_TrailsAndPlacedQuadsAlwaysBlendAndFog`. Still open: the port fogs placed
+  triangles per pixel rather than per vertex (oFog), a small difference.
+- **Where:** `src/Render/LevelRenderer.cpp`, the placed-triangle path (`fogged = !additive`)
+- **Retail:** Trail.fx and NonScreenAlignedParticles.fx set `FogEnable = TRUE` in
+  every technique, additive ones included. (Screen-aligned additive sprites are
+  unfogged in retail, see A-8.)
+- **Port:** additive placed-triangle and trail groups are left unfogged. Placed
+  triangles also fog per pixel rather than per vertex (`oFog`), a small difference.
+- **Fix:** confirm in RendDX9 which path draws trails and placed quads and what fog
+  state it leaves set, then fog them as retail does.
 
 ## Open verification questions (no known bug yet)
 

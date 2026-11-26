@@ -130,7 +130,26 @@ struct GameSetup {
 	int roundsPerMap = 3;
 	std::string serverName; // the create page's ServerSettings.setServerName / setPassword
 	std::string password;
+	// enhanced.singleplayBotCount: the singleplayer page's target of
+	// players (MenuBindings::singleplayBotCount), 0 when it doesn't apply
+	// (retail: `bots` for every map).
+	int playerTarget = 0;
 };
+
+// A map's bots and server maximum for a game the menu started. Retail
+// (no playerTarget): MaxBots less the player with MaxBotsIncludeHumans,
+// the same for every map, and the setup's maxPlayers. With a target:
+// min(target, the map's size) players with the player counted, so
+// min(target, size) - 1 bots; without MaxBotsIncludeHumans the target
+// counts the bots alone, still under the map's size with the player in
+// it (min(target, size - 1)). A size of 0 (unknown) caps nothing. The
+// maximum is raised to the players there will be, so the bot manager's
+// kick on a human's join (BotManager::population) keeps them.
+struct MapPlayers {
+	int bots = 0;
+	int maxPlayers = 0;
+};
+MapPlayers playersForMap(const GameSetup& setup, int mapSize);
 
 // The network behind the menu, replaceable (tests use fakes). Each
 // function blocks and runs on a worker thread.
@@ -180,6 +199,30 @@ public:
 	std::function<void()> onQuit;
 	// Multiplay.createServer: the game takes over with this setup.
 	std::function<void(const GameSetup&)> onStartGame;
+	// enhanced.singleplayAllModes (Scene/EnhancedSettings.h): while this
+	// answers true, the singleplayer page (the gpm_sp filter) lists every
+	// level's every mode and size, each row naming its mode. Unset or
+	// false: the gpm_sp layouts only, as retail.
+	std::function<bool()> singleplayAllModes;
+	// enhanced.singleplayBotCount (Scene/EnhancedSettings.h): while this
+	// answers true, the singleplayer page has a players slider
+	// (MenuSingleplayBots.h) and a game its startServer starts fills each
+	// map with min(target, the map's size) players, the player included
+	// (GameSetup::playerTarget, playersForMap). Unset or false: 16 players
+	// on every map, as retail's page sets.
+	std::function<bool()> singleplayBotCount;
+	// The target: total players with you, kSingleplayPlayersMin..Max;
+	// kept in the profile (GeneralSettings.SingleplayBotCount, the
+	// rewrite's own Enhanced.con: SettingsObjects.h).
+	static constexpr int kSingleplayPlayersMin = 1;
+	static constexpr int kSingleplayPlayersMax = 64;
+	static constexpr int kSingleplayPlayersDefault = 16;
+	int singleplayPlayers() const;
+	void setSingleplayPlayers(int players);
+	// Set while the singleplayer page's startServer runs (its playlist
+	// button and instant action), so its createServer takes the target;
+	// the create-server page's doesn't.
+	void setSingleplayStarting(bool starting) { m_singleplayStarting = starting; }
 	// Logic.disconnectGame: leave the running game for the menu.
 	std::function<void()> onDisconnect;
 	// Whether a game runs under the menu (Logic.isGameRunning).
@@ -522,6 +565,10 @@ private:
 	void resetGeneralValues(const std::vector<std::pair<std::string, ui::avm1::Value>>& values);
 	void showMapLists();
 	std::vector<MenuMap> availableMaps() const;
+	bool listsAllModes() const;
+	// A mode as the game modes' box shows it: TEXT_<id> translated, else
+	// its name in the mod unless "N/A", else the id.
+	std::string gameModeText(const std::string& mode) const;
 
 	void startAccountLogin(const std::string& name, const std::string& password, bool remember);
 	void finishAccountLogin();
@@ -678,6 +725,7 @@ private:
 
 	// Starting a game.
 	bool m_gameRunning = false;
+	bool m_singleplayStarting = false; // setSingleplayStarting
 	std::vector<MenuMap> m_maps;
 	std::string m_filterGameMode = "gpm_sp";
 	std::vector<MenuMap> m_mapList;

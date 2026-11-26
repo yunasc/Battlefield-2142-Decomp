@@ -594,6 +594,9 @@ public:
 		bool spectator = false; // player +0x404 (slots 0x3b8 / 0x3bc): setSpectator
 		bool alive = false;
 		double squadOrderPoints = 0, squadOrderMax = 0;
+		// The HUD's order bar (its +0x302, 0x007a2100 case 0x56): a set-max
+		// message of more than -1 has come for the squad.
+		bool squadOrderBar = false;
 		int fieldUnlockCredits = 0;
 		uint32_t soldier = 0, vehicle = 0, kit = 0, weapon = 0;
 		// The kit the player's body still wears, living, down or a corpse yet
@@ -1046,6 +1049,26 @@ public:
 	bool titanKitFloors() const
 	{
 		return m_enhancedKitFloors && *m_enhancedKitFloors && m_titanKitFloors && *m_titanKitFloors;
+	}
+	// The squads' order points (the squad's +0x184): the add (0x004c4c90)
+	// and the set-max (0x004c4ea0) do nothing without it. The server's squad
+	// constructor (0x004c87a0) sets it from 0x00430a00, a ranked game: gpm_cq,
+	// ti, sl, nv or ca on an internet server with GameSpyRanked and sv.ranked
+	// (and AIDLL's slot 0x20 true when it is loaded), which no LAN or offline
+	// host has, so the bar never shows offline. setSquadOrderGate is that
+	// ranked test's answer; enhanced.enabled with enhanced.squadOrderPoints,
+	// read live, open the gate on any server too. It changes the simulation
+	// (the bar's awards are field upgrades).
+	void setSquadOrderGate(bool ranked) { m_squadOrderRanked = ranked; }
+	void setSquadOrderPointsOffline(const bool* enhanced, const bool* on)
+	{
+		m_enhancedSquadOrder = enhanced;
+		m_squadOrderOffline = on;
+	}
+	bool squadOrderPointsOn() const
+	{
+		return m_squadOrderRanked
+			|| (m_enhancedSquadOrder && *m_enhancedSquadOrder && m_squadOrderOffline && *m_squadOrderOffline);
 	}
 	// The bots' spawn test (IAIPathfindingCourier slot 0xc, *0x00b4bb94):
 	// each scattered spawn try of a bot (0x005b2200's AI flag) must pass it;
@@ -1697,6 +1720,13 @@ public:
 		// under it); PICameraX / PICameraY bundles (hatches, AS_TANK_Cupola1)
 		// aren't the look's.
 		std::string yawBundle, pitchBundle;
+		// The armour whose EMP step scales each look bundle's input: the
+		// bundle input handler (0x00565180) walks from the bundle up its
+		// parents (+0x34) to the first with an armour (+0x48) and takes that
+		// one's (eu_tank's cupola, under EU_TANK_CupolaBase with none of its
+		// own, the tank's). Null: no armoured part above it.
+		const world::ObjectTemplate* yawArmour = nullptr;
+		const world::ObjectTemplate* pitchArmour = nullptr;
 		bool pitchUsesDriverInput = false; // PIPitch, filtered with the chassis controls
 		float minPitch = -90, maxPitch = 90; // the pitch bundle's limits (its rotation's y; down positive)
 		// The seat's first firearm's rest pitch under the pitch bundle (up
@@ -2610,9 +2640,21 @@ public:
 	// point, 2 an ammo giving point, 3 a driver assist, 4 a revive score. Null for
 	// the other kinds (5.. are the strategic and Titan attack scores).
 	static const char* replenishNotice(int kind);
-	// The AI runs on the server (AIDLL's interface 0xb47ce4, its slots 0x18
-	// and 0x20): a wreck's armour then drains three times as fast (0x00652380).
+	// The AI runs on the server (AIDLL's interface 0xb47ce4 answers slot
+	// 0x18, its +4: its init, slot 4 = 0x10001740, succeeded).
 	void setAiRunning(bool on) { m_aiRunning = on; }
+	// A wreck's armour drains three times as fast (0x00652380, for every
+	// root that is no soldier: vehicles and Titans alike) when the AI runs
+	// (slot 0x18), the object is mobile (+0x14 & 8) and AIDLL's slot 0x20
+	// (its +6, 0x1008a9b0) is false. The server's level load (0x004aefe0)
+	// inits the AI with +6 = !(GSGameMode is sp1, gpm_sp or gpm_coop) and
+	// +7 = (it is sp1 or gpm_sp) (0x004af290 -> 0x10001740), so the x 3 is
+	// the single-player and co-op modes' alone: a Titan (gpm_ti) wreck or a
+	// conquest one drains at 1x with bots.
+	bool wreckDrainsFast() const
+	{
+		return m_aiRunning && (m_gameMode == "sp1" || m_gameMode == "gpm_sp" || m_gameMode == "gpm_coop");
+	}
 	// The ladder's camera (the LadderContainer's LadderContainerCamera,
 	// DummyObjects.con: 1.5 m over the container and 0.4 m behind it, the
 	// mouse's PIMouseLookX / Y within -130..140 and -60..60 degrees of the
@@ -3134,8 +3176,8 @@ private:
 		bool hideChildren = false;
 		bool destroyNow = false; // destroyOnSpectacularDeath (+0x251)
 		// The wreck: the time it has stood, how long its armour drains to
-		// -wreckHitPoints (timeToStayAsWreck, a third of it with the AI
-		// running: 0x00652380's x 3) and the fade after (timeToStayAfterDestroyed).
+		// -wreckHitPoints (timeToStayAsWreck, a third of it with
+		// wreckDrainsFast: 0x00652380's x 3) and the fade after (timeToStayAfterDestroyed).
 		float wreckAge = 0, wreckDrain = 0;
 		// Each seat gun's WeaponBasedRecoilComp slide (GunRecoil), by seat.
 		std::vector<GunRecoil> gunRecoil;
@@ -3190,6 +3232,9 @@ private:
 		bool reported = false;
 		// The wheels' parts' radius (their vehicle LOD's, slot 0x50), by wheel.
 		std::vector<float> wheelRadii;
+		// The wheels' parts' vehicle-LOD vertex materials (slot 0x44(1, i),
+		// through mapMaterial), by wheel: their probes' own material.
+		std::vector<std::array<uint32_t, 3>> wheelMaterials;
 		uint32_t material = 0; // the template's material
 		// Sleeping (the node's counter +0x68 and its history).
 		physics::SleepState sleep;
@@ -4091,7 +4136,8 @@ private:
 	std::map<int, FieldUnlocks> m_fieldUnlocks;
 	struct SquadOrderScore {
 		double points = 0;
-		int maximum = 0;
+		int maximum = 100; // the squad's constructor (0x004c87a0) sets +0x168 to 100.0
+		bool maxSent = false; // a set-max has gone to the squad (event 0x56, 0x004c4ea0)
 	};
 	std::map<std::pair<int, int>, SquadOrderScore> m_squadOrderScores;
 	float m_tinnitus = 0;
@@ -4334,6 +4380,9 @@ private:
 	const bool* m_sprintStrafe = nullptr;
 	const bool* m_enhancedKitFloors = nullptr;       // setTitanKitFloors
 	const bool* m_titanKitFloors = nullptr;
+	bool m_squadOrderRanked = false;                 // setSquadOrderGate
+	const bool* m_enhancedSquadOrder = nullptr;      // setSquadOrderPointsOffline
+	const bool* m_squadOrderOffline = nullptr;
 	void startProjectileView(const Player& player, const Projectile& round, const world::ObjectTemplate& firearm);
 	// Steps the view (its round gone: ended); true while it takes the input.
 	bool stepProjectileView(Player& player, float seconds);

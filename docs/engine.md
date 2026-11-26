@@ -1306,7 +1306,12 @@ them; the contact's depth is how far the end lies behind that face,
   moves the wheel out along their mean normal by its push (0 to 1 m), so
   its spring and tyre (`0x006b8230`: the response's mean normal, point and
   velocity) treat another object's mesh as ground moving with it
-  (`Vehicle::touchObject`).
+  (`Vehicle::touchObject`). A probe's own material, in its contact and both
+  collision events, is its vertex's (`0x6bc764`: slot `0x44(1, i)` of the
+  wheel's mesh, through mapMaterial), the FAVs' Rubber 4550, whose cells
+  against the decks' materials have damageMod 0. (The rewrite took the
+  template's material, 0, whose cells have 1: a FAV lost about 30 hit
+  points a bump driving along a bridge, `Vehicles_FavDrivesAlongADeckUnhurt`.)
 
 - **The stuck push** (the solve `0x006ba7d0`, on the server: game logic
   slot `0x144`): a counter (`+0x118`, −1 each solve, held within −1..3)
@@ -1744,7 +1749,9 @@ the Parachute `parachute` (class `0xc5a8`, vtables `0x0096e518` /
   `GameWorld::parachuteRoom`, `canopyClear`; parachute.collisionmesh's
   24 vertices span −3.21..1.10 m about the start). Taken, it opens at his frame
   plus fire.projectileStartPosition (`0x005e4460`, slot 53: 0/2/0), the
-  round taking his velocity, and enterOnSpawn seats him. No press lets
+  round at rest (the launch's velocity, his own plus the speed, goes only
+  to a round answering 0x94c1, `0x005f2bb0`; the Parachute answers 0xc4c5
+  and is made with none, `0x005f18f0`), and enterOnSpawn seats him. No press lets
   it go: a weapon shown (its slot 10, `0x005c32f0`, while its fire test
   passes) calls its fire component's slot 33, which the
   SpawnObjectFireComp's `0x005e41e0` makes a fire (slot 0x90,
@@ -2247,8 +2254,9 @@ at the bundle (`GameWorld::armorEffectMeshes`); the world-left groups'
 
 The wreck (`0x00652380`): timeToStayAsWreck (template `+0x158`, 20 by
 default) drains the armour to −wreckHitPoints by wreckHitPoints /
-(timeToStayAsWreck × 30) a tick, three times that with the AI running and
-the object mobile (as for the Titans); drained or its time up, it fades
+(timeToStayAsWreck × 30) a tick, three times that with the AI running in sp1,
+gpm_sp or gpm_coop (AIDLL's slot 0x20 false: the level load's init,
+`0x004af290`) and the object mobile (as for the Titans); drained or its time up, it fades
 for timeToStayAfterDestroyed (`+0x15c`, 0) and goes (`0x00651db0`).
 canBeDestroyed 0 or a time of −1: it never drains. A spectacular death
 (the killing hit's `+0x250`): with destroyOnSpectacularDeath (`+0x165`)
@@ -2984,9 +2992,27 @@ Sound stays at the tick: the sound manager steps with the ticks (slot
 source was not traced. A held weapon's node without a part keeps its template
 place, so folding it into the part below gives the same draw as blending
 each node. The name tags are projected at the objects' drawn positions
-(`LevelSources::drawnPositions`). Bone poses stay per tick, as retail's: the
-soldier's skeleton is stepped only in its tick update (`0x00586200` →
-`0x005ef250` with 1/30 s), and the blend moves objects, not bones.
+(`LevelSources::drawnPositions`).
+
+Retail steps the soldiers' animation systems in the frame, not the tick.
+The frame calls ObjectManager slot `0x2c` (`0x007002d0`) with the frame's
+seconds (clamped as above), which runs slot `0xa4` of every object in its
+frame set: the objects with update flag `0x2000` (`0x006f68f0` → manager
+slots `0xf8`/`0xfc`; the tick set is flag `0x800`, slot `0xa8`, run by
+manager slot `0x28`). The Soldier's constructor (`0x0058df00`) sets
+`0x3800`, so each frame `0x00586710` runs `0x005ef250` with the frame's
+time: the active system's update (third or first person by `+0x2f0`;
+slot `0xc`, `0x008baed0`) and the held weapon's. The Soldier's tick update
+(`0x0058d350`) doesn't step them. `0x00586200` → `0x005ef250` with 1/30 s
+is a side path (from `0x00586e50`, `0x006c1df0` and the scene ray
+`0x006fb610`), not the regular step. The pose is evaluated
+(`0x008b8880` → `0x008b8330`) in `0x005f06b0`, which the frame-time
+Soldier method `0x00585bf0` (slot `0xa0`) calls with its flag set; that
+slot's caller wasn't found. The port steps the systems in the tick. Its
+third-person bones stay per tick (the blend moves objects, not bones); the
+first-person skeleton is drawn blended between where the last frame left
+it and the tick's pose (`anim::FirstPersonRig::blend`), the closest the
+tick-stepped systems come to retail's per-frame step.
 
 ## The first-person view
 
@@ -11499,9 +11525,13 @@ The unlock screen (`UnlockInterface`, `0x007b8e60`–`0x007b9a20`)
 spends credits earned in the current round. The scoring script sets a
 squad's threshold and adds points through `Player.setMaxOrderPoint` and
 `Player.setOrderPoint` (`0x005920c0` and `0x00592030`).
-`GameWorld` tracks progress by team and squad. At the threshold the
-`SquadBarFilled` hook in the shipped stats script grants each member
-a credit, and the meter resets (`0x004c4c90` / `0x004c4dd0`).
+`GameWorld` tracks progress by team and squad. Any amount is added, zero
+and negative too, and once the sum isn't below the threshold (100 until
+the script sets one, `0x004c87a0`; 0 counts) the `SquadBarFilled` hook
+in the shipped stats script grants each member a credit, and the meter
+resets (`0x004c4c90` / `0x004c4dd0`). Both setters run only on a ranked
+server (the squad's `+0x184`, below), so offline only with
+`enhanced.squadOrderPoints`.
 
 The Field Upgrade tab opens when there are credits (`0x007b95a0`).
 A spend advances the selected branch for both factions. UB_Player and
@@ -12603,7 +12633,15 @@ stance's height: 1.7, 1.4 crouching or swimming, 0.8 prone) and whose
 origins are within twice the radius × the scale across push each other
 apart by the overlap (no velocity; along z when nearer than 0.01). The
 original adds both soldiers' contacts at once; the rewrite gives each its
-own when it steps.
+own when it steps. Each contact passes material `0x2f` for both sides to
+`0x006c24b0` (`0x006c2841`..`0x006c288a`), which sets the response's
+friction (`+0xd4`, the grip of the movement `0x006c2230`) to the pair's
+(Flare's 1): a soldier in a crowd grips with it until his next floor
+contact (`SoldierBody::touchSoldier`). Without it a sprinter pressed into
+a pile on a Titan's deck (veh_titan_armor 5, 3.05 against Human_body),
+whose zero-velocity soldier contacts pull the mean contact velocity the
+grip compares with towards 0, ran up to 20 m/s and was road-killed by the
+hull.
 
 **The solve** (slot `0x30`, `0x006c48c0`; constants static_init
 `0x008ede60`..`0x008ee020`): the contacts so far push the soldier out,
@@ -12637,6 +12675,42 @@ segment test: the origin's way since before the last integration, less
 each moving object's own motion, crossing a face of a soldier LOD from the
 front (mesh slot 22) kills (1000, no one credited) — also a prone soldier
 whose spheres pass under something its origin (a metre up) runs into.
+The crush's and the run-over's 1000 (`0x006c4dcd`, `0x006c32ff`) go with
+the game logic damage's 19th argument 1, so `0x004c0e40` leaves the
+friendly fire out (`0x005b7290`'s fifth argument): the object's team (its
+PlayerControlObject's, slot `0x9c`) doesn't matter, nor does the
+soldier's takeDamageFromOwnTeam (armour slot `0xbc`, template `+0xdc`, 1
+unless set; only the Titans' parts set 0). A vehicle's ordinary contact
+with a soldier (the road kill, `0x005a43c0`, argument 0) does take the
+friendly fire: a friendly walker's foot kills a teammate at the default
+`sv.soldierFriendlyFire` 100 and spares him at 0
+(`Vehicles_FriendlyWalkerStepsOnATeammate`). A Titan, asleep for good
+(isSleeping; `0x006c9060` skips the sleep test for a Titan, `0x00561d90`;
+a major actor wakes from no minor one's mass shares; explosionForceMod 0),
+is never the heavy mover these two need (`Titan_RidersSurviveAMovingDeck`).
+
+**An enemy on a still Titan, shield down.** What hurts him there is retail's
+own: (1) the vehicle bay's forcefield (`as_titan_vb_shield`,
+`eu_forcefield_big`: a SimpleObject child of the root with no armour, so it
+stands after the outer shield's wreck at 60 %) is the wall between the roof
+and the rear deck. Its mesh has no soldier LOD, and the loader
+(`0x006e4880`: index `+0x18` taken from the vehicle's `+0x14` when -1)
+gives soldiers its vehicle LOD, every face `force_deathmat` 0x29a; its
+collisionGroups (256 PAC, 512 EU) let only its own team through
+(`0x006c3890`). The contact goes to the road kill (`0x005a43c0`), where
+0x29a skips the speed limit and its speed term is 1: dead at a walk
+(damageMod(0x29a, Human_body)). (2) A drop onto the hull over 10 m/s
+(`*0x00a6a794`; 3 only when the Titan outruns him) is (v − 10) × v × the
+mass factor (`0x005a2ca0`: both nodes mobile, slot `0x164` a class
+constant, `0x006a10e0` returns 1 on the mobile node classes even asleep;
+1e6 / 200 capped at 3). At gravity 14.73 the roof-to-deck drop (6.6 m)
+lands at 12-13 m/s: 80-120. No fall height is kept anywhere: the damage is
+the contact's speed alone (`0x005a3db0`, `0x005a43c0`), so nothing from a
+vehicle carries over. (3) A craft parked on the roof's hump that hasn't
+settled (awake) squashes a soldier wedged under it while he walks into it
+over 3 m/s: the solve compares the mover's point velocity with the
+soldier's own (`0x006c48c0`, `0x00a84748`). (`Titan_EnemyWalksOnAStillTitan`,
+`Titan_PilotLandsOnTheEnemyRoof`, `Titan_VehicleBayShieldOutlastsTheTitansShield`.)
 
 **The push** (`0x005ee2b0`): a hit's velocity × 2.5 (`*0x00a847b4`) kept
 16 ticks on the soldier (`+0x248`, the tick `+0x254`), which its ragdoll
@@ -13763,7 +13837,9 @@ squad's points `+0x160` added by the squad's slot `0x3c`, `0x004c4c90`,
 and their maximum, `0x004c6c80`) runs only when the squad's `+0x184` is
 set, which needs `0x00430a00`: a GameSpyRanked server of gpm_cq / ti / sl
 / nv / ca with the settings' `+0x26d` (the online stats); offline it is
-never shown.
+never shown (here: `enhanced.squadOrderPoints` keeps it). The HUD shows a
+member's bar once a maximum over −1 has come (`0x007a2100` case 0x56,
+`+0x302`).
 
 The AI commander's answers to the requests are under Bots ("AI
 commander"); bot squad leaders send none (AIDLL never calls the store).
@@ -14268,7 +14344,16 @@ seats have AI templates of equipment type Fixed (eu_Titan_Cannon1–4AI,
 eu_Titan_Cannon_AA_01/02AI: a Unit with setHasExposedSoldier,
 Armament setIsAntiAircraft), which AIDLL's seat choice (BBChange) and
 behaviours cover, but no strategy of its sends a bot into a Titan (its nav
-meshes are on the ground). The rewrite's choice: while fewer than half its
+meshes are on the ground). The levels' infantry meshes are their Conquest and
+Co-op ones and stop short of Titan mode's ground: Suez_Canal's covers x
+-712..260, z -238..163, so the PAC base (the Outpost, x 550..620) and silos
+901, 905 and 906 lie 45 m and more off it, where retail's follower plans no
+way and the soldier stands. With `enhanced.botTitan`, a soldier on the ground
+in gpm_ti with itself or its goal off the mesh walks a 4 m terrain grid (A*;
+steps clear of obstacles at knee and chest height and half a metre to either
+side, under 40 degrees, out of water), from the mesh after the mesh's way to
+its point nearest the goal, onto the mesh when the goal is on it
+(`BotManager::groundWalk`); infantry no longer pass over off-mesh silos. The rewrite's choice: while fewer than half its
 Titan's guns are manned or claimed, a bot aboard approaches the nearest free
 working gun's console and takes it (`titanGunEntry`). With
 `enhanced.botTitan` enabled, it follows the Titan's collision-derived walk
@@ -16956,6 +17041,26 @@ ask whether it's done.
   menu runs alone; `createServer` closes it and loads the level as
   `+level … +gameMode … +mapSize …` would, with the bots, their skill and
   the ticket ratio from the menu.
+- **The page's bot count** (mainMenu.dfm sprite 913's frame script): its
+  `startServer`, which both START PLAYLIST (`this._parent.startServer()`)
+  and instant action call, sets `GeneralSettings.setUseBots(true)`,
+  `setMaxBots(16)`, `setMaxBotsIncludeHumans(true)` and
+  `ServerSettings.setMaxPlayers(16)` (with team ratio 100, friendly fire,
+  ticket ratio 200, no time or score limit, 15 s spawns, autobalance) before
+  `createServer`, so every map of a playlist plays with 16 players, you
+  included, whatever its size; `AI/AIDefault.ai` sets
+  `aiSettings.setMaxNBots 16` and `maxBotsIncludeHumans 1` to match (its
+  commented-out block with `overrideMenuSettings 1` is the shipped way to
+  more). The bot skill is a `dice.UIs.Forms.Slider` (linkage `Slider`)
+  placed as `mcBotSkill`, whose `callBackFunctionSpecial`
+  (`adjustBotSkill`) the slider calls on its `_parent` as it moves.
+  `enhanced.singleplayBotCount` (port addition, `Main/MenuSingleplayBots.h`)
+  attaches another `Slider` with a `TextContainer` header (the
+  create-server page's `MULTIPLAY_3_maxplayers`, MAX PLAYERS) and number
+  right of the bot skill, 1..64 players (default 16, kept in the profile's
+  own `Enhanced.con`), and wraps `startServer` so its `createServer` takes
+  the target: each map gets min(target, size) players, you included
+  (`playersForMap`), the server maximum and `setMaxNBots` raised to match.
 - **The create-server page** (`mc_local_create`): the GAME MODE box lists
   the mod's modes without `sp1` and `gpm_sp` (0x10069160), in ModInfo's
   order (+0x10c): the level scan (0x004643d0) lists `<mod>/Levels/` with

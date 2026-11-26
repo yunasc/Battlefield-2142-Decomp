@@ -9,7 +9,7 @@
 // round with the switch off and on and fails if the fingerprints differ.
 // The exceptions are the gameplay additions with their own switches below
 // (botRecovery, botMovement, botTitan, botCommander, botPilots, guidedCameraEase, cornerSteer,
-// passengerWeapons, softLanding, titanKitFloors, sprintStrafe): they change the simulation by design, so the check turns
+// passengerWeapons, softLanding, titanKitFloors, sprintStrafe, squadOrderPoints): they change the simulation by design, so the check turns
 // them off (cornerSteer is off by default).
 #pragma once
 
@@ -45,10 +45,13 @@ struct EnhancedSettings {
 	bool softLanding = true; // enhanced.softLanding: a soldier landing on or walking into a slower object takes the ground's fall damage, not a road kill (Game/MeshCollision.cpp)
 	bool titanKitFloors = true; // enhanced.titanKitFloors: a kit dropped (or a beacon or shield placed) on a Titan stays on its walkable floor where the projectile mesh has none, as by the cargo bay's walls (GameWorld::surfaceBelow); retail lets it fall through
 	bool sprintStrafe = true; // enhanced.sprintStrafe: a sprinting soldier keeps his strafe and sprints diagonally (Game/SoldierControl.cpp); retail drops the strafe while sprinting (0x00588420)
+	bool squadOrderPoints = true; // enhanced.squadOrderPoints: the squads' order points, their HUD bar and its field upgrades work on any server (GameWorld::squadOrderPointsOn); retail runs them only on a ranked GameSpy server (0x00430a00), so never offline
 	// Interface, also only with enhanced.enabled:
 	bool chaseRoll = false; // enhanced.chaseRoll: a flying vehicle's chase and front-chase views bank with its hull (Main/PlayerCamera.cpp); off by default, as retail keeps them level (0x006108e0 -> lookAt 0x006ae080, up (0, 1, 0))
 	bool killWeaponNames = true; // enhanced.killWeaponNames: a kill from a vehicle without a hudName (a Titan's gun hubs) names the seat's gun (Main/main.cpp); retail prints empty brackets
 	bool hudWidescreen = false; // enhanced.hudWidescreen: a mod without Remaster's hudfix gets its 4:3 HUD and side moves (Main/main.cpp)
+	bool singleplayAllModes = true; // enhanced.singleplayAllModes: the singleplayer page lists every level's every mode and size (Titan, Assault Lines, ...), not only its gpm_sp layouts (Main/MenuBindings.cpp); the bots may not play them. Retail lists gpm_sp only
+	bool singleplayBotCount = true; // enhanced.singleplayBotCount: the singleplayer page gets a players slider beside the bot skill (Main/MenuSingleplayBots.h) and a game it starts fills each map with min(target, the map's size) players, you included (Main/MenuBindings.cpp playersForMap). Retail's page plays 16 on every map
 	// Drawing, also only with enhanced.enabled; experimental, off by default:
 	bool tvEffect = false; // enhanced.tvEffect: the guided round's view gets the TVEffect pass (grey, rolled by noise bands, shifting rows sideways so vertical edges lean); RendDX9 never runs it, retail shows the plain view
 };
@@ -101,6 +104,8 @@ inline void registerEnhancedConsoleMethods(Console& console, EnhancedSettings& s
 		[&settings](const bool& v) { settings.softLanding = v; });
 	bindProperty<bool>(console, "enhanced.titanKitFloors", ConsoleAccess::Anyone, [&settings] { return settings.titanKitFloors; },
 		[&settings](const bool& v) { settings.titanKitFloors = v; });
+	bindProperty<bool>(console, "enhanced.squadOrderPoints", ConsoleAccess::Anyone, [&settings] { return settings.squadOrderPoints; },
+		[&settings](const bool& v) { settings.squadOrderPoints = v; });
 	bindProperty<bool>(console, "enhanced.chaseRoll", ConsoleAccess::Anyone, [&settings] { return settings.chaseRoll; },
 		[&settings](const bool& v) { settings.chaseRoll = v; });
 	bindProperty<bool>(console, "enhanced.sprintStrafe", ConsoleAccess::Anyone, [&settings] { return settings.sprintStrafe; },
@@ -109,6 +114,10 @@ inline void registerEnhancedConsoleMethods(Console& console, EnhancedSettings& s
 		[&settings](const bool& v) { settings.killWeaponNames = v; });
 	bindProperty<bool>(console, "enhanced.hudWidescreen", ConsoleAccess::Anyone, [&settings] { return settings.hudWidescreen; },
 		[&settings](const bool& v) { settings.hudWidescreen = v; });
+	bindProperty<bool>(console, "enhanced.singleplayAllModes", ConsoleAccess::Anyone, [&settings] { return settings.singleplayAllModes; },
+		[&settings](const bool& v) { settings.singleplayAllModes = v; });
+	bindProperty<bool>(console, "enhanced.singleplayBotCount", ConsoleAccess::Anyone, [&settings] { return settings.singleplayBotCount; },
+		[&settings](const bool& v) { settings.singleplayBotCount = v; });
 	bindProperty<bool>(console, "enhanced.tvEffect", ConsoleAccess::Anyone, [&settings] { return settings.tvEffect; },
 		[&settings](const bool& v) { settings.tvEffect = v; });
 }
