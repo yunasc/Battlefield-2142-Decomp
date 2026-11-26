@@ -1093,6 +1093,7 @@ bool GameWorld::issueOrder(int team, int squad, OrderType type, float x, float z
 	order.type = type;
 	order.position = {x, m_ground.height ? m_ground.height(x, z) : 0.0f, z};
 	order.fromCommander = true;
+	order.serial = ++m_orderSerial;
 	m_orders[key] = order;
 	return true;
 }

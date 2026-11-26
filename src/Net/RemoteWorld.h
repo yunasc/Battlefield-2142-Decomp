@@ -513,6 +513,7 @@ public:
 		uint16_t object = 0;
 		Vec3f point;
 		bool accepted = false;
+		uint32_t serial = 0; // each IssueSquadOrder received, an identical one again included
 	};
 	std::vector<SquadOrder> squadOrders(int team = 0) const;
 	const SquadOrder* squadOrder(int team, int squad, int store) const;
@@ -613,6 +614,7 @@ private:
 	std::map<int, SpawnGroupInfo> m_spawnGroups;
 	std::map<std::pair<int, int>, std::array<std::optional<SquadRequest>, 4>> m_requests; // (team, squad)
 	std::map<std::tuple<int, int, int>, SquadOrder> m_orders; // (team, squad, store)
+	uint32_t m_orderSerial = 0;
 };
 
 } // namespace dice::hfe::net
