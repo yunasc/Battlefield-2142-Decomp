@@ -123,9 +123,9 @@ public:
 	}
 	// The first face the segment crosses from the front (the scene rays'
 	// mesh test 0x006bd070 without its two-sided flag).
-	bool raycastFront(const Vec3& from, const Vec3& to, Hit& hit, uint32_t ignore = 0) const
+	bool raycastFront(const Vec3& from, const Vec3& to, Hit& hit, uint32_t ignore = 0, uint32_t alsoIgnore = 0) const
 	{
-		return trace(from, to, hit, true, ignore);
+		return trace(from, to, hit, true, ignore, alsoIgnore);
 	}
 	// A moving mesh vertex against the faces (the mobile mesh physics'
 	// first pass, 0x006bb050 -> collision-mesh slot 22 0x006e5920): the
@@ -159,7 +159,7 @@ public:
 		const std::function<void(const Vec3& a, const Vec3& b, const Vec3& c, uint32_t material, uint32_t owner)>& visit) const;
 
 private:
-	bool trace(const Vec3& from, const Vec3& to, Hit& hit, bool frontOnly, uint32_t ignore = 0) const;
+	bool trace(const Vec3& from, const Vec3& to, Hit& hit, bool frontOnly, uint32_t ignore = 0, uint32_t alsoIgnore = 0) const;
 	struct Triangle {
 		Vec3 a, b, c;
 		Vec3 normal;

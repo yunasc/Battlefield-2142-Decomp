@@ -108,7 +108,7 @@ void CollisionWorld::append(const CollisionWorld& other)
 
 bool CollisionWorld::raycast(const Vec3& from, const Vec3& to, Hit& hit) const { return trace(from, to, hit, false); }
 
-bool CollisionWorld::trace(const Vec3& from, const Vec3& to, Hit& hit, bool frontOnly, uint32_t ignore) const
+bool CollisionWorld::trace(const Vec3& from, const Vec3& to, Hit& hit, bool frontOnly, uint32_t ignore, uint32_t alsoIgnore) const
 {
 	++m_stamp;
 	const Vec3 direction = to - from;
@@ -151,7 +151,7 @@ bool CollisionWorld::trace(const Vec3& from, const Vec3& to, Hit& hit, bool fron
 					continue;
 				}
 				t.stamp = m_stamp;
-				if (ignore != 0 && t.owner == ignore) {
+				if (t.owner != 0 && (t.owner == ignore || t.owner == alsoIgnore)) {
 					continue;
 				}
 				if (frontOnly && dot(direction, t.normal) >= 0) {
